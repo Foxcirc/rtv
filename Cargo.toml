@@ -1,0 +1,17 @@
+[package]
+name = "rtv"
+
+description = "Rtv is a crate for recursively traversing a directory using a simple API. In simple words: It get's a directory path and gives you acces to all files contained in that directory, it's sub-directorys, it's sub-sub-directorys and so on."
+keywords = ["directory", "file", "traverse", "recursive", "recurse"]
+categories = ["filesystem", "algorithms"]
+repository = "https://github.com/Foxcirc/rtv"
+documentation = "https://docs.rs/rtv"
+readme = "README.md"
+
+authors = ["foxcirc"]
+version = "0.1.2"
+edition = "2018"
+
+license = "MIT"
+
+# [dependencies]
