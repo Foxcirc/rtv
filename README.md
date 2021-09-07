@@ -29,7 +29,7 @@ These methods are exposed through the `Traverse` struct.
 Here a small function that goes trough every file inside `path/to/dir` and its subdirectories and
 prints the content.
 
-```rs
+```rust
 
 use rtv::Traverse;
 use std::io::Read;
