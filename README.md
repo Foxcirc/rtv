@@ -5,20 +5,22 @@ or in other words, to iterate over a directory tree.
 That means looking at every file inside a directory and it's subdirectories.
 For example consider this layout:
 
-> test_env
-  │   file1
-  │   file2
-  │   file3
-  │
-  ├───folder1
-  │   │   file4
-  │   │   file5
-  │   │
-  │   └───folder3
-  │           file7
-  │
-  └───folder2
-          file6
+```js
+    test_env
+    │   file1
+    │   file2
+    │   file3
+    │
+    ├───folder1
+    │   │   file4
+    │   │   file5
+    │   │
+    │   └───folder3
+    │           file7
+    │
+    └───folder2
+            file6
+```
 
 This crate provides functions to iterate over all the files, from `file1` to `file7`.
 
@@ -27,7 +29,7 @@ These methods are exposed through the `Traverse` struct.
 Here a small function that goes trough every file inside `path/to/dir` and its subdirectories and
 prints the content.
 
-```rust
+```rs
 
 use rtv::Traverse;
 use std::io::Read;
