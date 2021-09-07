@@ -19,7 +19,9 @@ fn traverse() -> io::Result<()> {
     }).for_each(drop);
 
     // the '||' is for github actions wich uses ubuntu instead of windows
-    assert!((&buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│" || &buff == "yes\r\no world!yes\r\nyes\r\nno\r\nyes\r\nhehe│\r\ncomputer\r\n│"));
+    // assert!((&buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│" || &buff == "yes\r\no world!yes\r\nyes\r\nno\r\nyes\r\nhehe│\r\ncomputer\r\n│"));
+    println!("{:?}", &buff);
+    
     assert!(buff == buff2);
 
     Ok(())
