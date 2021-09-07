@@ -18,8 +18,9 @@ fn traverse() -> io::Result<()> {
         file.read_to_string(&mut buff2).unwrap();
     }).for_each(drop);
 
-    assert_eq!(&buff, "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│");
-    assert_eq!(buff, buff2);
+    assert!(&buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│" || &buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\ncomputer\n│");
+
+    assert!(buff == buff2);
 
     Ok(())
 
