@@ -6,19 +6,19 @@ That means looking at every file inside a directory and it's subdirectories.
 For example consider this layout:
 
 > test_env
-> │   file1
-> │   file2
-> │   file3
-> │
-> ├───folder1
-> │   │   file4
-> │   │   file5
-> │   │
-> │   └───folder3
-> │           file7
-> │
-> └───folder2
->         file6
+  │   file1
+  │   file2
+  │   file3
+  │
+  ├───folder1
+  │   │   file4
+  │   │   file5
+  │   │
+  │   └───folder3
+  │           file7
+  │
+  └───folder2
+          file6
 
 This crate provides functions to iterate over all the files, from `file1` to `file7`.
 
