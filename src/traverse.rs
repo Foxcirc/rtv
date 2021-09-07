@@ -26,7 +26,7 @@ macro_rules! check {
 /// Since we only read from the file here, we don't need to specify
 /// what we want to do with it.
 /// 
-/// ```rust
+/// ```no_run
 /// 
 /// use rtv::Traverse;
 /// use std::io::Read;
@@ -98,7 +98,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// inside "path/to/dir" and it's subdirectories, so it needs `write`
     /// permissions.
     /// 
-    /// ```rust
+    /// ```no_run
     /// 
     /// use rtv::Traverse;
     /// use std::io::Write;
@@ -124,7 +124,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// Here we ignore `PermissionDenied` errors, because we just want to ignore files where we
     /// don't have `read` permission. // todo make an on_error function wich takes a callback that is called if an error is ignored 
     /// 
-    /// ```rust
+    /// ```no_run
     /// 
     /// use rtv::Traverse;
     /// use std::io::{Read, ErrorKind};
@@ -156,7 +156,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// # Example
     /// 
-    /// ```rust
+    /// ```no_run
     /// 
     /// use rtv::Traverse;
     /// use std::io::Read;
@@ -198,7 +198,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// # Examples
     /// 
-    /// ```rust
+    /// ```no_run
     /// 
     /// use rtv::Traverse;
     /// use std::io::{Read, ErrorKind};

@@ -12,7 +12,7 @@ You can also choose to ignore some errors or open files with custom permissions.
 This function goes trough every file inside `path/to/dir` and its subdirectories and
 prints the content.
 
-```rust
+```no_run
 
 use rtv::Traverse;
 use std::io::Read;
