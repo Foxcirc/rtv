@@ -18,7 +18,8 @@ fn traverse() -> io::Result<()> {
         file.read_to_string(&mut buff2).unwrap();
     }).for_each(drop);
 
-    assert!(&buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│" || &buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\ncomputer\n│");
+    // the second one is for the github-actions build, wich is ubuntu
+    assert!(&buff == "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│" || &buff == "yes\nyes\no world!no\nheheyes\nyes\n│\ncomputer\n│");
 
     assert!(buff == buff2);
 
