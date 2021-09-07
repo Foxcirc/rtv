@@ -5,7 +5,7 @@ or in other words, to iterate over a directory tree.
 That means looking at every file inside a directory and it's subdirectories.
 For example consider this layout:
 
-```js
+```
     test_env
     │   file1
     │   file2
