@@ -19,7 +19,7 @@ fn traverse() -> io::Result<()> {
     }).for_each(drop);
 
     // the second one is for the github-actions build, wich is ubuntu
-    assert_eq!(&buff, "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│");
+    if cfg!(windows) { assert_eq!(&buff, "yes\no world!yes\nyes\nno\nyes\nhehe│\r\ncomputer\r\n│"); }
 
     assert!(buff == buff2);
 
