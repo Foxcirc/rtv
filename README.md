@@ -44,6 +44,9 @@ Traverse::new("path/to/dir").apply(|mut file| {
 
 # Changelog
 
+## 0.2.0 -> 0.2.1
+- Added the `scan_dirs` function
+
 ## 0.1.2 -> 0.2.0
 - The callback the `apply` function takes, now gets the path to the file.
 - The `build` function now returns a `Vec<PathBuf>` instead of `Vec<DirEntry>`.

@@ -188,12 +188,12 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// This function traverses the directory structure and returns a [`Vec`] containing all files.
     /// 
-    /// Specifically, the returned vector contains [`DirEntry`]'s wich are **guarantied to be files**.
+    /// Specifically, the returned vector contains [`PathBuf`]'s wich are the files found.
     /// This doesn't mean you can open them without fearing a `NotFound` error though, because the file
     /// may have beed deleted after it has been processed.
     /// 
     /// Since this function doesn't actually open files. It makes no sense combining it with
-    /// [`Traverse::options`], [`Traverse::read`] or [`Traverse::write`]. // todo add runtime checks for this
+    /// [`Traverse::options`], [`Traverse::read`] or [`Traverse::write`].
     /// 
     /// # Examples
     /// 
@@ -225,6 +225,20 @@ impl <A: AsRef<Path>>Traverse<A> {
         
     }
     
+    /// Collect all files into a [`Vec`].
+    /// 
+    /// This function traverses the directory structure and returns a [`Vec`] containing all the **directories**.
+    ///
+    /// Specifically, the returned vector contains [`PathBuf`]'s wich are the path's to the directories found.
+    /// 
+    pub fn build_dirs(&self) -> io::Result<Vec<PathBuf>> {
+        
+        let mut dirs = Vec::new();
+        scan_dirs(&self.path, &mut |item| dirs.push(item.path()), &self.ignored)?; // scan already ignores the specified errors
+        Ok(dirs)
+        
+    }
+    
 }
 
 /// Performs the recursive traversal.
@@ -239,6 +253,27 @@ fn scan<A: AsRef<Path>, C: FnMut(DirEntry)>(path: A, apply: &mut C, ignored: &Ve
         
         if kind.is_file() { apply(item); }
         else if kind.is_dir() { check!(scan(item.path(), apply, ignored), ignored => continue); }
+        
+    }
+    
+    Ok(())
+    
+}
+
+/// Performs the recursive traversal on directories.
+fn scan_dirs<A: AsRef<Path>, C: FnMut(DirEntry)>(path: A, apply: &mut C, ignored: &Vec<io::ErrorKind>) -> io::Result<()> {
+    
+    let items = check!(fs::read_dir(path), ignored => return Ok(()));
+    
+    for item in items {
+        let item = check!(item, ignored => continue); // todo use reuslt
+        
+        let kind = check!(item.file_type(), ignored => continue);
+        
+        if kind.is_dir() {
+            check!(scan(item.path(), apply, ignored), ignored => continue);
+            apply(item);
+        }
         
     }
     
