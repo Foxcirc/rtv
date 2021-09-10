@@ -31,7 +31,7 @@ macro_rules! check {
 /// use rtv::Traverse;
 /// use std::io::Read;
 /// 
-/// Traverse::new("path/to/dir").apply(|mut file| {
+/// Traverse::new("path/to/dir").apply(|mut file, _| {
 ///     //  It is better to use String::with_capacity with the file's size to avoid multiple allocations.
 ///     let mut buff = String::new();
 ///     file.read_to_string(&mut buff);
@@ -104,7 +104,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// use std::io::Write;
     /// use std::fs::OpenOptions;
     /// 
-    /// Traverse::new("path/to/dir").options(OpenOptions::new().write(true)).apply(|mut file| {
+    /// Traverse::new("path/to/dir").options(OpenOptions::new().write(true)).apply(|mut file, _| {
     ///     write!(file, "Hello world!").unwrap();
     /// });
     /// 
@@ -130,7 +130,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// use std::io::{Read, ErrorKind};
     /// use std::fs::OpenOptions;
     /// 
-    /// Traverse::new("path/to/dir").ignore(ErrorKind::PermissionDenied).apply(|mut file| {
+    /// Traverse::new("path/to/dir").ignore(ErrorKind::PermissionDenied).apply(|mut file, _| {
     ///     let mut buff = String::new();
     ///     file.read_to_string(&mut buff);
     ///     println!("{}", buff);

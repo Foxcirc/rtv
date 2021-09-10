@@ -20,7 +20,7 @@ use std::io::Read;
 //  It is better to use String::with_capacity with the file's size to avoid multiple allocations.
 let mut buff = String::new();
 
-Traverse::new("path/to/dir").apply(|mut file| {
+Traverse::new("path/to/dir").apply(|mut file, _| {
     file.read_to_string(&mut buff);
     println!("{}", buff);
 });
