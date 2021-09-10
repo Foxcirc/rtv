@@ -11,10 +11,10 @@ fn traverse() -> io::Result<()> {
     let mut buff = String::new();
     let mut buff2 = String::new();
 
-    trav.apply(|mut file| { file.read_to_string(&mut buff).ok(); })?;
+    trav.apply(|mut file, _| { file.read_to_string(&mut buff).ok(); })?;
 
-    trav.build()?.iter().map(|v| {
-        let mut file = File::open(v.path()).unwrap();
+    trav.build()?.iter().map(|path| {
+        let mut file = File::open(path).unwrap();
         file.read_to_string(&mut buff2).unwrap();
     }).for_each(drop);
 

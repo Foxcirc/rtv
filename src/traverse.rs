@@ -1,5 +1,5 @@
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs::{
     self,
     File,
@@ -122,7 +122,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// # Examples
     /// 
     /// Here we ignore `PermissionDenied` errors, because we just want to ignore files where we
-    /// don't have `read` permission. // todo make an on_error function wich takes a callback that is called if an error is ignored 
+    /// don't have `read` permission. 
     /// 
     /// ```no_run
     /// 
@@ -147,12 +147,12 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// Call a function on every file.
     /// 
     /// This function take a callback, traverses the directory structure and 
-    /// calls the callback with the opened file as argument.
+    /// calls the callback with the opened file and the path for that file as arguments.
     /// 
-    /// For writing to files or managing other permissions, see [`Traverse::options`]. // todo add note for use with OpenOptions::create_new etc.
+    /// For writing to files or managing other permissions, see [`Traverse::options`].
     /// 
-    /// If an error is reported, the closure **will not get called**, since error checking // todo add the file path as an argument to the callback
-    /// is done before 
+    /// If an error is reported, the closure **will not get called**, since error checking
+    /// is done before calling the function.
     /// 
     /// # Example
     /// 
@@ -161,7 +161,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// use rtv::Traverse;
     /// use std::io::Read;
     /// 
-    /// Traverse::new("path/to/dir").apply(|mut file| {
+    /// Traverse::new("path/to/dir").apply(|mut file, _| {
     ///     let mut buff = String::new();
     ///     file.read_to_string(&mut buff);
     ///     println!("{}", buff);
@@ -169,18 +169,17 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// ```
     /// 
-    pub fn apply<B: FnMut(File)>(&self, mut func: B) -> io::Result<()> {
+    pub fn apply<B: FnMut(File, PathBuf)>(&self, mut func: B) -> io::Result<()> {
         
         let items = self.build()?;
         let mut files = Vec::with_capacity(items.len());
         
         for item in items {
-            let file = check!(self.options.open(item.path()), self.ignored => continue);
-            files.push(file)
+            let file = check!(self.options.open(&item), self.ignored => continue);
+            files.push((file, item))
         }
 
-        // build already ignores the specified errors
-        for file in files { func(file) };        
+        for (file, path) in files { func(file, path) };        
 
         Ok(())
     }
@@ -207,9 +206,9 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// let files = Traverse::new("path/to/dir").build().unwrap();
     /// 
     /// // iterate over the Vec and print the content of the files
-    /// for item in files {
+    /// for path in files {
     ///     // since our items are DirEntrys we have to open them first
-    ///     let mut file = File::open(item.path()).unwrap();
+    ///     let mut file = File::open(path).unwrap();
     ///     
     ///     let mut buff = String::new();
     ///     file.read_to_string(&mut buff);
@@ -218,10 +217,10 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// ```
     /// 
-    pub fn build(&self) -> io::Result<Vec<DirEntry>> {
+    pub fn build(&self) -> io::Result<Vec<PathBuf>> {
         
         let mut files = Vec::new();
-        scan(&self.path, &mut |item| files.push(item), &self.ignored)?; // scan already ignores the specified errors
+        scan(&self.path, &mut |item| files.push(item.path()), &self.ignored)?; // scan already ignores the specified errors
         Ok(files)
         
     }
