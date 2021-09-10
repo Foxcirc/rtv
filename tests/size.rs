@@ -15,7 +15,7 @@ fn size() -> io::Result<()> {
     let size: u64 = files.iter().map(|v| v.metadata().unwrap().len()).sum();
     let mut buff = String::with_capacity(size as usize);
 
-    for mut file in files.iter().map(|entry| fs::File::open(entry.path()).unwrap()) {
+    for mut file in files.iter().map(|entry| fs::File::open(entry).unwrap()) {
         file.read_to_string(&mut buff).unwrap();
     }
 
