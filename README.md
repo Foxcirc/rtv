@@ -1,4 +1,8 @@
 
+# Rtv
+
+![build](https://github.com/foxcirc/rtv/actions/workflows/rust.yml/badge.svg)
+
 This is a rust crate wich makes it easy to recursively traverse a directory
 or in other words, to iterate over a directory tree.
 
