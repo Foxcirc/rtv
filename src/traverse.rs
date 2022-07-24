@@ -8,16 +8,6 @@ use std::fs::{
 };
 use std::io;
 
-/// Check if this error should be ignored.
-macro_rules! check {
-    ($result:expr, $ignored:expr => $action:expr) => {
-        match $result {
-            Ok(v) => v,
-            Err(e) => { if !$ignored.contains(&e.kind()) { return Err(e) } else { $action } }
-        }
-    };
-}
-
 /// Used to specify wich directory to traverse and with
 /// what options to open the files.
 /// 
@@ -43,7 +33,6 @@ macro_rules! check {
 pub struct Traverse<A: AsRef<Path>> {
     path: A,
     options: OpenOptions,
-    ignored: Vec<io::ErrorKind>
 }
 
 impl <A: AsRef<Path>>Traverse<A> {
@@ -53,7 +42,7 @@ impl <A: AsRef<Path>>Traverse<A> {
         let mut options = OpenOptions::new();
         options.read(true);
 
-        Self { path, options, ignored: Vec::new() }
+        Self { path, options }
     }
 
     /// A shortcut for calling [`Traverse::options`] with `OpenOptions` where
@@ -70,7 +59,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     pub fn read(self, perm: bool) -> Self {
         let mut options = self.options;
         options.read(perm);
-        Self { path: self.path, options, ignored: self.ignored }
+        Self { path: self.path, options }
     }
     
     /// A shortcut for calling [`Traverse::options`] with `OpenOptions` where
@@ -85,7 +74,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     pub fn write(self, perm: bool) -> Self {
         let mut options = self.options;
         options.write(perm);
-        Self { path: self.path, options, ignored: self.ignored }
+        Self { path: self.path, options }
     }
 
     /// Change the [`OpenOptions`] the files are opened with.
@@ -104,44 +93,13 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// use std::io::Write;
     /// use std::fs::OpenOptions;
     /// 
-    /// Traverse::new("path/to/dir").options(OpenOptions::new().write(true)).apply(|mut file, _| {
+    /// Traverse::new("path/to/dir").options(OpenOptions::new().write(true)).apply(|file, _| {
     ///     write!(file, "Hello world!").unwrap();
     /// });
     /// 
     /// ```
     pub fn options(self, options: &mut OpenOptions) -> Self {
-        Self { path: self.path, options: options.clone(), ignored: self.ignored }
-    }
-    
-    /// Specifies IO errors to ignore.
-    /// 
-    /// After calling this function errors of the specified [`std::io::ErrorKind`] will be ignored.
-    /// Ignoring an error will just skip that file / directory, depending on where the error
-    /// occured.
-    /// 
-    /// # Examples
-    /// 
-    /// Here we ignore `PermissionDenied` errors, because we just want to ignore files where we
-    /// don't have `read` permission. 
-    /// 
-    /// ```no_run
-    /// 
-    /// use rtv::Traverse;
-    /// use std::io::{Read, ErrorKind};
-    /// use std::fs::OpenOptions;
-    /// 
-    /// Traverse::new("path/to/dir").ignore(ErrorKind::PermissionDenied).apply(|mut file, _| {
-    ///     let mut buff = String::new();
-    ///     file.read_to_string(&mut buff);
-    ///     println!("{}", buff);
-    /// });
-    /// 
-    /// ```
-    /// 
-    pub fn ignore(self, kind: io::ErrorKind) -> Self {
-        let mut ignored = self.ignored; // pusing directly onto self.ignored requires `mut self`
-        ignored.push(kind);
-        Self { path: self.path, options: self.options, ignored }
+        Self { path: self.path, options: options.clone() }
     }
     
     /// Call a function on every file.
@@ -151,8 +109,8 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// 
     /// For writing to files or managing other permissions, see [`Traverse::options`].
     /// 
-    /// If an error is reported, the closure **will not get called**, since error checking
-    /// is done before calling the function.
+    /// If an error is encountered, the closure will get called with that error. If the closure
+    /// returns an error, the traversing will stop and other directorys will not be traversed.
     /// 
     /// # Example
     /// 
@@ -161,27 +119,84 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// use rtv::Traverse;
     /// use std::io::Read;
     /// 
-    /// Traverse::new("path/to/dir").apply(|mut file, _| {
+    /// Traverse::new("path/to/dir").apply(|file, _| {
     ///     let mut buff = String::new();
-    ///     file.read_to_string(&mut buff);
+    ///     file?.read_to_string(&mut buff)?;
     ///     println!("{}", buff);
     /// });
     /// 
     /// ```
     /// 
-    pub fn apply<B: FnMut(File, PathBuf)>(&self, mut func: B) -> io::Result<()> {
-        
-        let items = self.build()?;
-        let mut files = Vec::with_capacity(items.len());
-        
-        for item in items {
-            let file = check!(self.options.open(&item), self.ignored => continue);
-            files.push((file, item))
-        }
+    /// Here a version of that function that skips every file that cannot be opened 
+    /// for some reason, instead of aborting on error.
+    /// 
+    /// ```no_run
+    /// 
+    /// use rtv::Traverse;
+    /// use std::io::Read;
+    /// 
+    /// Traverse::new("path/to/dir").apply(|file, _| {
+    ///     if let Ok(file) = file {
+    ///         let mut buff = String::new();
+    ///         file.read_to_string(&mut buff)?;
+    ///         println!("{}", buff);
+    ///     }
+    /// });
+    /// 
+    /// ```
+    /// 
+    /// Although this function skips a file if it cannot be opened. It fails, if we cannot read
+    /// the file!
+    /// To skip on every error that is forewarded using the `?` operator, see the
+    /// [`apply_skip`] and [`apply_skip_dirs`] functions.
+    /// 
+    pub fn apply<B: FnMut(io::Result<File>, PathBuf) -> io::Result<()>>(&self, mut func: B) -> io::Result<()> {
 
-        for (file, path) in files { func(file, path) };        
+        scan_files(&self.path, &mut |item| {
+            let path = item.path();
+            let file = self.options.open(&path);
+            func(file, path)
+        })
 
-        Ok(())
+    }
+    
+    /// Call a function on every file and skip on error.
+    /// 
+    /// This function take a callback, traverses the directory structure and 
+    /// calls the callback with the opened directory and the path for that directory as arguments.
+    /// 
+    /// For writing to files or managing other permissions, see [`Traverse::options`].
+    /// 
+    /// If the closure returns an error, the file is skipped and traversing continues.
+    /// 
+    /// # Example
+    /// 
+    /// ```no_run
+    /// 
+    /// use rtv::Traverse;
+    /// use std::io::Read;
+    /// 
+    /// Traverse::new("path/to/dir").apply_skip(|file, _| {
+    ///     if let Ok(file) = file {
+    ///         let mut buff = String::new();
+    ///         file.read_to_string(&mut buff)?;
+    ///         println!("{}", buff);
+    ///     }
+    /// });
+    /// 
+    /// ```
+    /// 
+    pub fn apply_skip<B: FnMut(File, PathBuf) -> io::Result<()>>(&self, mut func: B) -> io::Result<()> {
+        
+        scan_files_skip(&self.path, &mut |item| {
+            let path = item.path();
+            if let Ok(file) = self.options.open(&path) {
+                func(file, path)
+            } else {
+                Ok(())
+            }
+        })
+
     }
     
     /// Collect all files into a [`Vec`].
@@ -208,7 +223,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     /// // iterate over the Vec and print the content of the files
     /// for path in files {
     ///     // since our items are DirEntrys we have to open them first
-    ///     let mut file = File::open(path).unwrap();
+    ///     let file = File::open(path).unwrap();
     ///     
     ///     let mut buff = String::new();
     ///     file.read_to_string(&mut buff);
@@ -220,7 +235,7 @@ impl <A: AsRef<Path>>Traverse<A> {
     pub fn build(&self) -> io::Result<Vec<PathBuf>> {
         
         let mut files = Vec::new();
-        scan(&self.path, &mut |item| files.push(item.path()), &self.ignored)?; // scan already ignores the specified errors
+        scan_files(&self.path, &mut |item| { files.push(item.path()); Ok(()) })?;
         Ok(files)
         
     }
@@ -234,25 +249,36 @@ impl <A: AsRef<Path>>Traverse<A> {
     pub fn build_dirs(&self) -> io::Result<Vec<PathBuf>> {
         
         let mut dirs = Vec::new();
-        scan_dirs(&self.path, &mut |item| dirs.push(item.path()), &self.ignored)?; // scan already ignores the specified errors
+        scan_dirs(&self.path, &mut |item| { dirs.push(item.path()); Ok(()) })?;
         Ok(dirs)
         
     }
     
 }
 
+fn scan_files<A: AsRef<Path>, C: FnMut(DirEntry) -> io::Result<()>>(path: A, apply: &mut C) -> io::Result<()> {
+    scan(path, &mut |item| { if item.file_type()?.is_file() { apply(item)? } Ok(()) })
+}
+
+fn scan_dirs<A: AsRef<Path>, C: FnMut(DirEntry) -> io::Result<()>>(path: A, apply: &mut C) -> io::Result<()> {
+    scan(path, &mut |item| { if item.file_type()?.is_dir() { apply(item)? } Ok(()) })
+}
+
 /// Performs the recursive traversal.
-fn scan<A: AsRef<Path>, C: FnMut(DirEntry)>(path: A, apply: &mut C, ignored: &Vec<io::ErrorKind>) -> io::Result<()> {
+fn scan<A: AsRef<Path>, C: FnMut(DirEntry) -> io::Result<()>>(path: A, apply: &mut C) -> io::Result<()> {
     
-    let items = check!(fs::read_dir(path), ignored => return Ok(()));
+    let items = fs::read_dir(path)?;
     
     for item in items {
-        let item = check!(item, ignored => continue); // todo use reuslt
+        let item = item?;
+        let kind = item.file_type()?;
         
-        let kind = check!(item.file_type(), ignored => continue);
-        
-        if kind.is_file() { apply(item); }
-        else if kind.is_dir() { check!(scan(item.path(), apply, ignored), ignored => continue); }
+        if kind.is_file() {
+            apply(item)?
+        } else if kind.is_dir() {
+            scan(item.path(), apply)?;
+            apply(item)?
+        }
         
     }
     
@@ -260,19 +286,25 @@ fn scan<A: AsRef<Path>, C: FnMut(DirEntry)>(path: A, apply: &mut C, ignored: &Ve
     
 }
 
-/// Performs the recursive traversal on directories.
-fn scan_dirs<A: AsRef<Path>, C: FnMut(DirEntry)>(path: A, apply: &mut C, ignored: &Vec<io::ErrorKind>) -> io::Result<()> {
+fn scan_files_skip<A: AsRef<Path>, C: FnMut(DirEntry) -> io::Result<()>>(path: A, apply: &mut C) -> io::Result<()> {
+    scan_skip(path, &mut |item| { if item.file_type()?.is_file() { apply(item)? } Ok(()) })
+}
+
+
+/// Performs the recursive traversal.
+fn scan_skip<A: AsRef<Path>, C: FnMut(DirEntry) -> io::Result<()>>(path: A, apply: &mut C) -> io::Result<()> {
     
-    let items = check!(fs::read_dir(path), ignored => return Ok(()));
+    let items = fs::read_dir(path)?;
     
     for item in items {
-        let item = check!(item, ignored => continue); // todo use reuslt
+        let item = item?;
+        let kind = item.file_type()?;
         
-        let kind = check!(item.file_type(), ignored => continue);
-        
-        if kind.is_dir() {
-            check!(scan(item.path(), apply, ignored), ignored => continue);
-            apply(item);
+        if kind.is_file() {
+            apply(item).ok();
+        } else if kind.is_dir() {
+            scan(item.path(), apply).ok();
+            apply(item).ok();
         }
         
     }

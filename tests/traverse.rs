@@ -11,7 +11,7 @@ fn traverse() -> io::Result<()> {
     let mut buff = String::new();
     let mut buff2 = String::new();
 
-    trav.apply(|mut file, _| { file.read_to_string(&mut buff).ok(); })?;
+    trav.apply(|file, _| { file?.read_to_string(&mut buff)?; Ok(()) })?;
 
     trav.build()?.iter().map(|path| {
         let mut file = File::open(path).unwrap();

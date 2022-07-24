@@ -38,7 +38,7 @@ prints the content.
 use rtv::Traverse;
 use std::io::Read;
 
-Traverse::new("path/to/dir").apply(|mut file| {
+Traverse::new("path/to/dir").apply(|mut file, _| {
     let mut buff = String::new();
     file.read_to_string(&mut buff);
     println!("{}", buff);
