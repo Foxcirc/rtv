@@ -1,12 +1,13 @@
 [package]
 name = "rtv"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["foxcirc"]
-description = "For when you just wanna run a future"
+description = "For when you just wanna execute a future"
 keywords = ["async", "futures", "simple", "io"]
 categories = ["asynchronous"]
+repository = "https://github.com/Foxcirc/rtv"
+readme = "readme.md"
 
 [dependencies]
-
 
