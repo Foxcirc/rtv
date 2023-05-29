@@ -8,6 +8,7 @@ keywords = ["async", "futures", "simple", "io"]
 categories = ["asynchronous"]
 repository = "https://github.com/Foxcirc/rtv"
 readme = "readme.md"
+license = "MIT"
 
 [dependencies]
 
