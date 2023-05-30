@@ -1,13 +1,13 @@
 
 use std::{future, time::Duration};
 
-use crate::{execute, timeout};
+use crate::{run, timeout};
 
 #[test]
 fn ready() {
 
     let future = future::ready(69);
-    let value = execute(future);
+    let value = run(future);
     assert!(value == 69);
 
 }

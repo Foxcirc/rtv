@@ -1,8 +1,8 @@
 
 # Rtv
 
-This crate makes it easy to "just execute" a future.
-It offers two simple functions `execute` and `timeout` that
+This crate makes it easy to "just run" a future.
+It offers two simple functions `run` and `timeout` that
 will drive a future to completion on a single thread.
 
 You can easily view all of the source code as it is all
@@ -11,11 +11,11 @@ contained within `lib.rs`
 # Example
 
 Executing a future without a timeout is as easy as calling
-`execute` with the future.
+`run` with the future.
 
 ```rust
 let future = std::future::ready(69);
-let result = rtv::execute(future);
+let result = rtv::run(future);
 assert!(result == 69);
 ```
 

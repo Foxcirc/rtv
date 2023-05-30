@@ -1,14 +1,14 @@
 
 //! # Rtv
 //!
-//! Rtv is a crate to "just execute" a future, on a single thread,
+//! Rtv is a crate to "just run" a future, on a single thread,
 //! without any additional dependencies.
 //! This crate tries to avoid unsafe as much as possible.
 //! You can easily view all of the source code as it is all contained within `lib.rs`
 //!
 //! There are two available functions:
-//! - [`execute`] to simplty execute a future
-//! - [`timeout`] to execute a future with a given timoeut
+//! - [`run`] to simplty run a future
+//! - [`timeout`] to run a future with a given timoeut
 //!
 
 use std::{future::Future, task::{Context, Waker, Poll}, sync::mpsc::{sync_channel, RecvTimeoutError}, time::{Duration, Instant}};
@@ -16,21 +16,21 @@ use std::{future::Future, task::{Context, Waker, Poll}, sync::mpsc::{sync_channe
 #[cfg(test)]
 mod test;
 
-/// execute a future
+/// run a future
 ///
 /// # Example
 ///
 /// ```rust
 /// let future = std::future::ready(69);
-/// let result = rtv::execute(future);
+/// let result = rtv::run(future);
 /// assert!(result == 69);
 /// ```
 #[inline]
-pub fn execute<T>(future: impl Future<Output = T>) -> T {
-    run(future, Duration::MAX).expect("Duration::MAX elapsed")
+pub fn run<T>(future: impl Future<Output = T>) -> T {
+    execute(future, Duration::MAX).expect("Duration::MAX elapsed")
 }
 
-/// execute a future with given timeout
+/// run a future with given timeout
 ///
 /// # Example
 ///
@@ -43,10 +43,10 @@ pub fn execute<T>(future: impl Future<Output = T>) -> T {
 /// ```
 #[inline]
 pub fn timeout<T>(future: impl Future<Output = T>, timeout: Duration) -> Option<T> {
-    run(future, timeout)
+    execute(future, timeout)
 }
 
-fn run<T>(future: impl Future<Output = T>, mut timeout: Duration) -> Option<T> {
+fn execute<T>(future: impl Future<Output = T>, mut timeout: Duration) -> Option<T> {
 
     let mut pinned = Box::pin(future);
     let (sender, waiter) = sync_channel(0);
