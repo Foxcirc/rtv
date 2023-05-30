@@ -26,7 +26,7 @@ mod test;
 /// assert!(result == 69);
 /// ```
 #[inline]
-pub fn execute<T>(future: impl Future<Output = T> + Unpin) -> T {
+pub fn execute<T>(future: impl Future<Output = T>) -> T {
     run(future, Duration::MAX).expect("Duration::MAX elapsed")
 }
 
@@ -42,13 +42,13 @@ pub fn execute<T>(future: impl Future<Output = T> + Unpin) -> T {
 /// assert!(result == None)
 /// ```
 #[inline]
-pub fn timeout<T>(future: impl Future<Output = T> + Unpin, timeout: Duration) -> Option<T> {
+pub fn timeout<T>(future: impl Future<Output = T>, timeout: Duration) -> Option<T> {
     run(future, timeout)
 }
 
-fn run<T>(mut future: impl Future<Output = T> + Unpin, mut timeout: Duration) -> Option<T> {
+fn run<T>(future: impl Future<Output = T>, mut timeout: Duration) -> Option<T> {
 
-    let mut pinned = Box::pin(&mut future);
+    let mut pinned = Box::pin(future);
     let (sender, waiter) = sync_channel(0);
 
     let raw_waker = waker::new(sender);
