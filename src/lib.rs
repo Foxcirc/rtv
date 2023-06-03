@@ -1,112 +1,83 @@
 
-//! # Rtv
-//!
-//! Rtv is a crate to "just run" a future, on a single thread,
-//! without any additional dependencies.
-//! This crate tries to avoid unsafe as much as possible.
-//! You can easily view all of the source code as it is all contained within `lib.rs`
-//!
-//! There are two available functions:
-//! - [`run`] to simplty run a future
-//! - [`timeout`] to run a future with a given timoeut
-//!
+use std::iter::once;
 
-use std::{future::Future, task::{Context, Waker, Poll}, sync::mpsc::{sync_channel, RecvTimeoutError}, time::{Duration, Instant}};
+mod dns;
 
 #[cfg(test)]
 mod test;
 
-/// run a future
-///
-/// # Example
-///
-/// ```rust
-/// let future = std::future::ready(69);
-/// let result = rtv::run(future);
-/// assert!(result == 69);
-/// ```
-#[inline]
-pub fn run<T>(future: impl Future<Output = T>) -> T {
-    execute(future, Duration::MAX).expect("Duration::MAX elapsed")
+pub struct Client {
+    io: mio::Poll,
 }
 
-/// run a future with given timeout
-///
-/// # Example
-///
-/// This code will finish after `2` seconds.
-///
-/// ```rust
-/// let future = std::future::pending();
-/// let result: Option<()> = rtv::timeout(future, std::time::Duration::from_secs(2));
-/// assert!(result == None)
-/// ```
-#[inline]
-pub fn timeout<T>(future: impl Future<Output = T>, timeout: Duration) -> Option<T> {
-    execute(future, timeout)
+impl Client {
+
+    pub fn new() -> Result<Self, std::io::Error> {
+        mio::Poll::new().map(|io| Self { io }) // GG
+    }
+
+    pub fn send<B: ToString>(&self, request: Request<B>) -> Transmission {
+
+        let request_text = request.http_format();
+
+        todo!();
+
+    }
+
 }
 
-fn execute<T>(future: impl Future<Output = T>, mut timeout: Duration) -> Option<T> {
+pub struct Transmission {
 
-    let mut pinned = Box::pin(future);
-    let (sender, waiter) = sync_channel(0);
+}
 
-    let raw_waker = waker::new(sender);
-    let waker = unsafe { Waker::from_raw(raw_waker) };
-    let mut context = Context::from_waker(&waker);
+pub struct Request<'a, B> {
+    pub method: Method,
+    pub uri: Uri<'a>,
+    pub headers: Vec<Header<'a>>,
+    pub body: B,
+}
 
-    let start = Instant::now();
+pub enum Method {
+    Get,
+}
 
-    loop {
+pub struct Uri<'a> {
+    pub host: &'a str,
+    pub path: &'a str,
+}
 
-        let value = pinned.as_mut().poll(&mut context);
-        match value {
-            Poll::Pending => match waiter.recv_timeout(timeout) {
-                Ok(()) => timeout -= Instant::now() - start,
-                Err(RecvTimeoutError::Timeout) => return None,
-                Err(RecvTimeoutError::Disconnected) => panic!("Channel disconnected")
-            },
-            Poll::Ready(result) => return Some(result),
+pub struct Header<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
+}
+
+trait HttpFormat {
+    fn http_format(&self) -> String; // todo: make it bytes or smth
+}
+
+impl HttpFormat for Method {
+    fn http_format(&self) -> String {
+        match self {
+            Method::Get => "GET".to_string(),
         }
-
     }
-
 }
 
-mod waker {
-
-    use std::{task::{RawWaker, RawWakerVTable}, sync::mpsc::SyncSender, mem::ManuallyDrop};
-
-    const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, waker_drop);
-    type WakerSender = ManuallyDrop<SyncSender<()>>;
-
-    pub(crate) fn new(sender: SyncSender<()>) -> RawWaker {
-        let value = ManuallyDrop::new(sender);
-        RawWaker::new(&value as *const WakerSender as *const (), &VTABLE)
+impl<'a> HttpFormat for Vec<Header<'a>> {
+    fn http_format(&self) -> String {
+        self.into_iter().map(|header| header.http_format()).collect()
     }
+}
 
-    unsafe fn clone(data: *const ()) -> RawWaker {
-        let value = sender(data).clone();
-        RawWaker::new(&value as *const WakerSender as *const (), &VTABLE)
+impl<'a> HttpFormat for Header<'a> {
+    fn http_format(&self) -> String {
+        format!("{}: {}\n", self.name, self.value)
     }
+}
 
-    unsafe fn wake(data: *const ()) {
-        wake_by_ref(data);
-        waker_drop(data);
+impl<'a, B: ToString> HttpFormat for Request<'a, B> {
+    fn http_format(&self) -> String {
+        format!("{} {} HTTP/1.1\nHost: {}\n{}\n{}", self.method.http_format(), self.uri.path, self.uri.host, self.headers.http_format(), self.body.to_string())
     }
-
-    unsafe fn wake_by_ref(data: *const ()) {
-        sender(data).send(()).expect("Channel disconnected")
-    }
-
-    unsafe fn waker_drop(data: *const ()) {
-        ManuallyDrop::drop(sender(data))
-    }
-
-    #[track_caller]
-    unsafe fn sender<'d>(data: *const ()) -> &'d mut WakerSender {
-        (data as *mut WakerSender).as_mut().expect("Cannot dereference `sender` pointer")
-    }
-
 }
 

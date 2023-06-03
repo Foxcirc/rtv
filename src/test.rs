@@ -1,23 +1,36 @@
+use crate::dns;
 
-use std::{future, time::Duration};
-
-use crate::{run, timeout};
 
 #[test]
-fn ready() {
+fn dns_resolve() {
 
-    let future = future::ready(69);
-    let value = run(future);
-    assert!(value == 69);
+    let mut io = mio::Poll::new().unwrap();
+    let mut events = mio::Events::with_capacity(16);
 
-}
+    let mut client = dns::DnsClient::new(mio::Token(0)).unwrap();
 
-#[test]
-fn pending() {
+    client.resolve(&io, "google.com").unwrap();
+    client.resolve(&io, "example.com").unwrap();
+    client.resolve(&io, "discord.com").unwrap();
+    client.resolve(&io, "youtube.com").unwrap();
 
-    let future = future::pending();
-    let value: Option<()> = timeout(future, Duration::from_secs(1));
-    assert!(value == None);
+    'ev: loop {
+
+        io.poll(&mut events, None).unwrap();
+
+        for event in events.iter() {
+
+            println!("-> readable: {}, writable: {}", event.is_readable(), event.is_writable());
+            if let Some(resp) = client.pump(&event).unwrap() {
+                println!("Got adress: {:?}", resp.addr);
+                // break 'ev;
+            }
+
+        }
+
+        events.clear();
+
+    }
 
 }
 
