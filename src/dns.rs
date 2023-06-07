@@ -1,96 +1,161 @@
 
-use mio::{net::UdpSocket, Interest};
-use std::{io, net::{SocketAddr, IpAddr, Ipv4Addr}, io::Write, iter::repeat, process::id};
+use mio::net::UdpSocket;
+use std::{io, net::{SocketAddr, Ipv4Addr}, fmt, time::{self, Duration, Instant}};
+use crate::util::{new_sock_addr, register_all, wouldblock, reregister_all, is_elapsed};
 
-const ME:  SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
-const DNS: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53);
+const ME:  SocketAddr = new_sock_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
+const DNS: SocketAddr = new_sock_addr(Ipv4Addr::new(8, 8, 8, 8), 53);
 
 pub(crate) struct DnsClient<'a> {
-    socket: UdpSocket,
-    connected: bool,
+    pub(crate) token: mio::Token,
+    socket: Option<UdpSocket>,
     write_outdated: bool,
-    token: mio::Token,
     requests: Vec<InternalRequest<'a>>,
     next_id: u16,
 }
 
 impl<'a> DnsClient<'a> {
 
-    pub(crate) fn new(token: mio::Token) -> io::Result<Self> {
-        Ok(Self {
-            socket: UdpSocket::bind(ME)?,
-            connected: false,
+    pub(crate) fn new(token: mio::Token) -> Self {
+        Self {
+            socket: None,
             write_outdated: false,
             token,
             requests: Vec::new(),
             next_id: 0
-        })
+        }
     }
 
-    pub(crate) fn resolve(&mut self, io: &mio::Poll, req: impl Into<DnsRequest<'a>>) -> io::Result<Id> {
+    pub(crate) fn resolve(&mut self, io: &mio::Poll, req: impl Into<DnsRequest<'a>>, timeout: Option<Duration>) -> io::Result<DnsId> {
 
-        if !self.connected {
-            self.socket.connect(DNS)?;
-            io.registry().register(&mut self.socket, self.token, Interest::READABLE | Interest::WRITABLE)?;
-            self.connected = true;
+        if self.socket.is_none() {
+            let mut socket = UdpSocket::bind(ME)?;
+            socket.connect(DNS)?;
+            register_all(io, &mut socket, self.token)?;
+            self.socket = Some(socket);
         }
         
         if self.write_outdated {
-            io.registry().reregister(&mut self.socket, self.token, Interest::READABLE | Interest::WRITABLE)?;
+            let socket = self.socket.as_mut().expect("No socket.");
+            reregister_all(io, socket, self.token)?;
             self.write_outdated = false;
         }
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.requests.push(InternalRequest { state: InternalRequestState::Pending, inner: req.into(), id });
 
-        Ok(Id { inner: id })
+        self.requests.push(InternalRequest {
+            id,
+            state: InternalRequestState::Pending,
+            inner: req.into(),
+            time_created: Instant::now(),
+            timeout,
+        });
+
+        Ok(DnsId { inner: id })
 
     }
 
-    pub(crate) fn pump(&mut self, event: &mio::event::Event) -> io::Result<Option<DnsResponse>> {
+    pub(crate) fn pump(&mut self, io: &mio::Poll, events: &mio::Events) -> io::Result<Vec<DnsResponse>> {
 
-        if self.token == event.token() {
+        let mut responses = Vec::new();
 
-            if event.is_writable() {
+        let mut index: isize = 0;
+        while let Some(request) = self.requests.get_mut(index as usize) {
 
-                self.write_outdated = true;
+            if is_elapsed(request.time_created, request.timeout) {
 
-                if let Some(req) = self.requests.iter_mut().find(|req| req.state == InternalRequestState::Pending) {
-                    let bytes = req.parse_into_packet();
-                    self.socket.send(&bytes)?;
-                    req.state = InternalRequestState::Sent;
-                    self.write_outdated = false;
-                }
+                let id = request.id;
+
+                self.requests.swap_remove(index as usize);
+                index -= 1;
+
+                responses.push(DnsResponse {
+                    id: DnsId { inner: id },
+                    outcome: DnsOutcome::TimedOut
+                })
 
             }
 
-            if event.is_readable() {
+            index += 1;
 
-                let mut buff = [0; 1024];
-                self.socket.recv(&mut buff)?;
-                let resp = DnsResponse::parse_from_packet(&buff);
-
-                if let Some(idx) = self.requests.iter().position(|req| req.id == resp.id.inner) {
-                    self.requests.swap_remove(idx);
-                    if self.requests.is_empty() {
-                        self.socket = UdpSocket::bind(ME)?;
-                        self.connected = false;
-                    }
-                }
-
-                return Ok(Some(resp))
-            }
-            
         }
 
-        Ok(None)
+        for event in events {
+
+            if self.token == event.token() {
+
+                // we get another `writable` event after reading the
+                // last response, so there may not be a socket even if we get an event
+                if let Some(ref mut socket) = self.socket {
+
+                    if event.is_writable() {
+
+                        self.write_outdated = true;
+                        for req in self.requests.iter_mut() {
+
+                            if req.state == InternalRequestState::Pending {
+
+                                let bytes = req.parse_into_packet();
+                                socket.send(&bytes)?;
+
+                                req.state = InternalRequestState::Sent;
+                                self.write_outdated = false;
+
+                            }
+
+                        }
+
+                    }
+
+                    if event.is_readable() {
+
+                        loop {
+
+                            let mut buff = [0; 1024];
+
+                            match socket.recv(&mut buff) {
+                                Err(err) if wouldblock(&err) => break,
+                                Err(other) => return Err(other),
+                                Ok(..) => (),
+                            };
+
+                            let resp = DnsResponse::parse_from_packet(&buff);
+
+                            // the request might have timeout out and thus be removed earlier
+                            let maybe_idx = self.requests.iter().position(|req| req.id == resp.id.inner);
+                            if let Some(idx) = maybe_idx {
+
+                                responses.push(resp);
+
+                                self.requests.swap_remove(idx);
+
+                                if self.requests.is_empty() {
+                                    io.registry().deregister(socket)?;
+                                    self.socket = None;
+                                    break
+                                }
+
+                            }
+
+                        }
+
+                    }
+
+                }
+                
+            }
+
+        }
+
+        Ok(responses)
 
     }
 
 }
 
-pub(crate) struct Id {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DnsId {
     pub(crate) inner: u16,
 }
 
@@ -105,9 +170,11 @@ impl<'a> From<&'a str> for DnsRequest<'a> {
 }
 
 struct InternalRequest<'a> {
+    id: u16,
     state: InternalRequestState,
     inner: DnsRequest<'a>,
-    id: u16,
+    time_created: Instant,
+    timeout: Option<Duration>,
 }
 
 #[derive(PartialEq)]
@@ -129,9 +196,17 @@ impl<'a> InternalRequest<'a> {
 
 }
 
+#[derive(Debug)]
+pub(crate) enum DnsOutcome {
+    Known { addr: Ipv4Addr, ttl: time::Duration },
+    Unknown,
+    Error,
+    TimedOut,
+}
+
 pub(crate) struct DnsResponse {
-    pub id: Id,
-    pub addr: Ipv4Addr,
+    pub(crate) id: DnsId,
+    pub(crate) outcome: DnsOutcome,
 }
 
 impl DnsResponse {
@@ -140,17 +215,44 @@ impl DnsResponse {
 
         let packet = dns_parser::Packet::parse(buff).unwrap();
 
-        let addr = match packet.answers[0].data {
-            dns_parser::RData::A(res) => res.0,
-            _ => unreachable!(),
+        let outcome = match packet.header.response_code {
+            dns_parser::ResponseCode::NoError => {
+                match parse_answer(&packet) {
+                    Some((addr, ttl)) => DnsOutcome::Known { addr, ttl },
+                    None => DnsOutcome::Error,
+                }
+            },
+            dns_parser::ResponseCode::NameError => {
+                DnsOutcome::Unknown
+            },
+            _ => {
+                DnsOutcome::Error
+            }
         };
 
-        Self {
-            id: Id { inner: packet.header.id },
-            addr,
-        }
+        Self { id: DnsId { inner: packet.header.id }, outcome }
 
     }
 
+}
+
+fn parse_answer(packet: &dns_parser::Packet) -> Option<(Ipv4Addr, time::Duration)> {
+    for answer in &packet.answers {
+        if let dns_parser::RData::A(result) = answer.data {
+            return Some((result.0, time::Duration::from_secs(answer.ttl as u64)))
+        }
+    }
+    None
+}
+
+impl fmt::Debug for DnsResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.outcome {
+            DnsOutcome::Known { addr, ttl } => write!(f, "{:?}, ttl: {:?}", addr, ttl),
+            DnsOutcome::Unknown => write!(f, "Unknown"),
+            DnsOutcome::Error => write!(f, "Error"),
+            DnsOutcome::TimedOut => write!(f, "TimedOut"),
+        }
+    }
 }
 
