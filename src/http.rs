@@ -1,6 +1,8 @@
 
 use std::{fmt, str::FromStr, time::Duration};
 
+/// An Http method.
+/// The default method is `Get`.
 #[derive(Clone, Default)]
 pub enum Method {
     #[default]
@@ -14,21 +16,26 @@ pub enum Method {
     Trace,
 }
 
+/// An Http uri.
+/// The path may start with a `/` or it may not, this is handeled internally.
 #[derive(Clone, Default)]
 pub struct Uri<'a> {
     pub host: &'a str,
     pub path: &'a str,
 }
 
+/// An Http header.
 #[derive(Clone)]
 pub struct Header<'a> {
     pub name: &'a str,
     pub value: &'a str,
 }
 
+/// The Id assigned to a request. This Id should be treated as an opaque container.
+/// You can use it to check if a response belongs to a request.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReqId {
-    pub(crate) inner: usize,
+    pub inner: usize,
 }
 
 impl fmt::Debug for ReqId {
@@ -37,6 +44,8 @@ impl fmt::Debug for ReqId {
     }
 }
 
+/// Used to build a request.
+/// See [`Request::build`].
 #[derive(Default, Clone)]
 pub struct RequestBuilder<'a> {
     request: Request<'a>,
@@ -54,38 +63,68 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
-    pub fn uri(mut self, host: &'a str, path: &'a str) -> Self {
-        self.request.uri = Uri { host, path };
+    /// Set the uri.host component of this request.
+    pub fn host(mut self, host: &'a str) -> Self {
+        self.request.uri.host = host;
         self
     }
 
+    /// Set the uri.path component of this request.
+    pub fn path(mut self, path: &'a str) -> Self {
+        self.request.uri.path = path;
+        self
+    }
+
+    /// Insert a header into this request.
     pub fn set(mut self, name: &'a str, value: &'a str) -> Self {
         self.request.headers.push(Header { name, value });
         self
     }
 
-    pub fn send_str(mut self, body: &'a str) -> Self {
-        self.request.body = body.as_bytes();
-        self
-    }
-
+    /// Update the request body with the specified data.
     pub fn send_bytes(mut self, body: &'a [u8]) -> Self {
         self.request.body = body;
         self
     }
 
+    /// Like [`send_bytes`](RequestBuilder::send_bytes).
+    /// Convenience function to convert the string to bytes for you.
+    pub fn send_str(mut self, body: &'a str) -> Self {
+        self.request.body = body.as_bytes();
+        self
+    }
+
+    /// Get the request.
+    /// You don't *have* to use this, since all functions that send a request can also
+    /// take a `RequestBuilder` directly.
     pub fn finish(self) -> Request<'a> {
         self.request
     }
 
 }
 
+/// This just calls [`finish`](RequestBuilder::finish).
 impl<'a> From<RequestBuilder<'a>> for Request<'a> {
     fn from(builder: RequestBuilder<'a>) -> Self {
         builder.finish()
     }
 }
 
+/// Represents an Http request.
+/// You can build a request either through this struct directly
+/// or through a [`RequestBuilder`].
+/// # Example
+/// Create a request directly.
+/// ```rust
+/// let req = Request {
+///     uri: Uri { host: "example.com", path: "" },
+///     ..Default::default(),
+/// };
+/// ```
+/// Create a request using a builder.
+/// ```rust
+/// let req = Request::get().host("example.com");
+/// ```
 #[derive(Clone, Default)]
 pub struct Request<'a> {
     pub timeout: Option<Duration>,
@@ -97,14 +136,24 @@ pub struct Request<'a> {
 
 impl<'a> Request<'a> {
 
+    /// Build a request. For [`Method::get`] and [`Method::post`] there are two
+    /// convencience functions.
+    /// # Example
+    /// Create a request using a builder and set the method to `Delete`.
+    /// ```rust
+    /// let req = Request::build().method(Method::Delete).host("example.com");
+    /// ```
+    /// Oh no we just deleted the exam-
     pub fn build() -> RequestBuilder<'a> {
         RequestBuilder::default()
     }
 
+    /// Build a request with the `Get` method.
     pub fn get() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Get)
     }
 
+    /// Build a request with the `Post` method.
     pub fn post() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Post)
     }
@@ -150,18 +199,23 @@ impl<'a> Request<'a> {
 
 }
 
+/// An owned Http header. This is used in a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedHeader {
     pub name: String,
     pub value: String,
 }
 
+/// A status code and message for a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub code: u16,
     pub text: String,
 }
 
+/// The `Head` of a response. This is not to be confused with `Header`.
+/// The response head contains informations about the response.
+/// It contains the status, the headers and the content_length.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseHead {
     pub status: Status,
@@ -170,6 +224,16 @@ pub struct ResponseHead {
 }
 
 impl ResponseHead {
+
+    /// Get the value of a header. Returns `None` if the header could not be found.
+    pub fn get_header<'d>(&'d self, name: &str) -> Option<&'d str> {
+        self.headers.iter().find_map(move |header| if header.name == name { Some(&header.value[..]) } else { None } )
+    }
+
+    /// Get an Iterator over all the headers.
+    pub fn all_headers<'d>(&'d self, name: &'d str) -> impl Iterator<Item = &'d str> {
+        self.headers.iter().filter_map(move |header| if header.name == name { Some(&header.value[..]) } else { None })
+    }
 
     pub(crate) fn parse(bytes: &[u8]) -> Option<(Self, usize)> {
 
@@ -212,6 +276,20 @@ impl ResponseHead {
 
 }
 
+/// An Http response.
+/// Contains the response id, that could be obtained earlier when sending the request.
+/// It also contains the [`ResponseState`]. A `Response` is **not** a full Http response. It
+/// is just one part of the full response. This arcitecture allows for streaming the response data,
+/// not waiting for everything to arrive.
+/// # Example
+/// Here is an example of how matching against a response might look.
+/// ```rust
+/// match resp.state {
+///     ResponseState::Head(head) => println!("content_length is {} bytes", head.content_length),
+///     ResponseState::Data(some_data) => buffer.extend_from_slice(&some_data),
+///     ...
+/// }
+/// ```
 #[derive(Debug)]
 pub struct Response {
     pub id: ReqId,
@@ -226,15 +304,27 @@ impl Response {
 
 }
 
+/// The state of a response.
+/// For more information see [`Request`].
+/// The first thing you receive should be [`ResponseState::Head`], at least in a normal scenario.
+/// If the request is finished and no error occured you will always receive [`ResponseState::Done`]
+/// and no more events for that request afterwards.
 #[derive(PartialEq, Eq)]
 pub enum ResponseState {
-    TimedOut,
+    /// The response head. Contains information about what the response contains.
     Head(ResponseHead),
+    /// We have read *some* data for this request. The data is not transmitted all at once,
+    /// everytime the server sends a chunk of data you will receive one of these.
     Data(Vec<u8>),
+    /// The request is done and will not generate any more events.
     Done,
+    /// The request timed out. This will only occur when you set a timeout for a request.
+    TimedOut,
+    /// The server unexpectedly closed the connection for this request.
     Dead,
 }
 
+/// This doesn't print the `ResponseState::Data` raw or as a string, instread it just prints the length.
 impl fmt::Debug for ResponseState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -244,20 +334,6 @@ impl fmt::Debug for ResponseState {
             Self::Done => write!(f, "Done"),
             Self::Dead => write!(f, "Dead"),
         }
-    }
-}
-
-pub trait Headers {
-    fn get_header<T: FromStr>(&self, name: &str) -> Option<T>;
-    fn all_headers<'d>(&'d self, name: &str) -> Vec<&'d str>;
-}
-
-impl Headers for ResponseHead {
-    fn get_header<T: FromStr>(&self, name: &str) -> Option<T> {
-        self.headers.iter().find_map(|header| if header.name == name { Some(header.value.parse().ok()?) } else { None } )
-    }
-    fn all_headers<'d>(&'d self, name: &str) -> Vec<&'d str> {
-        self.headers.iter().filter_map(|header| if header.name == name { Some(&header.value[..]) } else { None }).collect()
     }
 }
 

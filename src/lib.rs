@@ -1,4 +1,6 @@
 
+// todo: impl chunked transfer encoding
+
 mod util;
 mod http;
 mod dns;

@@ -77,7 +77,7 @@ fn simple_request() {
 
     let mut client = SimpleClient::new().unwrap();
 
-    let resp = client.send(Request::get().uri("google.com", "")).unwrap();
+    let resp = client.send(Request::get().host("google.com")).unwrap();
 
     println!("Got a response!");
     println!("Body length: {}", resp.body.len());
@@ -91,8 +91,8 @@ fn many_request() {
 
     let mut client = SimpleClient::new().unwrap();
 
-    let req = Request::get().uri("google.com", "");
-    let other_req = Request::get().uri("example.com", "");
+    let req = Request::get().host("google.com");
+    let other_req = Request::get().host("example.com");
     let mut reqs = vec![req; NUM_REQUESTS];
     reqs.push(other_req);
 
@@ -120,7 +120,7 @@ fn streaming_request() {
 
     let mut client = SimpleClient::new().unwrap();
 
-    let mut resp = client.stream(Request::get().uri("httpbin.org", "")).unwrap();
+    let mut resp = client.stream(Request::get().host("httpbin.org")).unwrap();
 
     println!("Expected length: {}", resp.head.content_length);
     let mut buff = Vec::new();
