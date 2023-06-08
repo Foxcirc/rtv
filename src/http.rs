@@ -1,8 +1,8 @@
 
-use std::{fmt, str::FromStr, time::Duration};
+use std::{fmt, time::Duration};
 
-/// An Http method.
-/// The default method is `Get`.
+/// An HTTP method.
+/// The default method is `GET`.
 #[derive(Clone, Default)]
 pub enum Method {
     #[default]
@@ -16,7 +16,7 @@ pub enum Method {
     Trace,
 }
 
-/// An Http uri.
+/// An HTTP uri.
 /// The path may start with a `/` or it may not, this is handeled internally.
 #[derive(Clone, Default)]
 pub struct Uri<'a> {
@@ -24,14 +24,16 @@ pub struct Uri<'a> {
     pub path: &'a str,
 }
 
-/// An Http header.
+/// An HTTP header.
 #[derive(Clone)]
 pub struct Header<'a> {
     pub name: &'a str,
     pub value: &'a str,
 }
 
-/// The Id assigned to a request. This Id should be treated as an opaque container.
+/// The ID assigned to a request.
+///
+/// This should be treated as an opaque container.
 /// You can use it to check if a response belongs to a request.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReqId {
@@ -110,7 +112,7 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
     }
 }
 
-/// Represents an Http request.
+/// Represents an HTTP request.
 /// You can build a request either through this struct directly
 /// or through a [`RequestBuilder`].
 /// # Example
@@ -136,7 +138,7 @@ pub struct Request<'a> {
 
 impl<'a> Request<'a> {
 
-    /// Build a request. For [`Method::get`] and [`Method::post`] there are two
+    /// Build a request. For [`Method::Get`] and [`Method::Post`] there are two
     /// convencience functions.
     /// # Example
     /// Create a request using a builder and set the method to `Delete`.
@@ -148,12 +150,12 @@ impl<'a> Request<'a> {
         RequestBuilder::default()
     }
 
-    /// Build a request with the `Get` method.
+    /// Build a request with the `GET` method.
     pub fn get() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Get)
     }
 
-    /// Build a request with the `Post` method.
+    /// Build a request with the `POST` method.
     pub fn post() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Post)
     }
@@ -186,6 +188,9 @@ impl<'a> Request<'a> {
         headers += &self.body.len().to_string();
         headers += "\n";
 
+        headers += "Accept-Encoding: identity";
+        headers += "\n";
+
         let trimmed_path = path.trim_start_matches('/');
 
         let head = format!("{} /{} HTTP/1.1\nHost: {}\n{}\n", method, trimmed_path, host, headers);
@@ -199,7 +204,7 @@ impl<'a> Request<'a> {
 
 }
 
-/// An owned Http header. This is used in a response.
+/// An owned HTTP header. This is used in a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedHeader {
     pub name: String,
@@ -213,7 +218,8 @@ pub struct Status {
     pub text: String,
 }
 
-/// The `Head` of a response. This is not to be confused with `Header`.
+/// The `Head` of a response. This is not to be confused with an HTTP `Header`.
+///
 /// The response head contains informations about the response.
 /// It contains the status, the headers and the content_length.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +227,7 @@ pub struct ResponseHead {
     pub status: Status,
     pub headers: Vec<OwnedHeader>,
     pub content_length: usize,
+    pub transfer_chunked: bool,
 }
 
 impl ResponseHead {
@@ -249,15 +256,19 @@ impl ResponseHead {
         let status_text = info.next()?;
 
         let mut content_length = 0;
+        let mut transfer_chunked = false;
 
         let mut headers = Vec::with_capacity(8);
         for line in lines {
 
             let (name, value) = line.split_once(':')?;
+            let name = name.trim();
+            let value = value.trim();
 
-            if name == "Content-Length" { content_length = value.trim().parse().ok()? }
+            if name == "Content-Length" { content_length = value.parse().ok()? }
+            if name == "Transfer-Encoding" && value == "chunked" { transfer_chunked = true }
 
-            headers.push(OwnedHeader { name: name.trim().to_string(), value: value.trim().to_string() })
+            headers.push(OwnedHeader { name: name.to_string(), value: value.to_string() })
 
         }
 
@@ -270,23 +281,25 @@ impl ResponseHead {
             status,
             headers,
             content_length,
+            transfer_chunked,
         }, head_end + 4 /* skip the seperator */))
 
     }
 
 }
 
-/// An Http response.
-/// Contains the response id, that could be obtained earlier when sending the request.
-/// It also contains the [`ResponseState`]. A `Response` is **not** a full Http response. It
-/// is just one part of the full response. This arcitecture allows for streaming the response data,
-/// not waiting for everything to arrive.
+/// An HTTP response.
+/// Contains a [`ResponseState`].
+///
+/// A `Response` is **not** a full HTTP response but just one part of it. This arcitecture
+/// allows for streaming the response data, not waiting for everything to arrive.
+/// It also contains the response id, that could be obtained earlier when sending the request.
 /// # Example
 /// Here is an example of how matching against a response might look.
 /// ```rust
 /// match resp.state {
 ///     ResponseState::Head(head) => println!("content_length is {} bytes", head.content_length),
-///     ResponseState::Data(some_data) => buffer.extend_from_slice(&some_data),
+///     ResponseState::Data(some_data) => response_data_buffer.extend_from_slice(&some_data),
 ///     ...
 /// }
 /// ```
@@ -305,6 +318,7 @@ impl Response {
 }
 
 /// The state of a response.
+///
 /// For more information see [`Request`].
 /// The first thing you receive should be [`ResponseState::Head`], at least in a normal scenario.
 /// If the request is finished and no error occured you will always receive [`ResponseState::Done`]
@@ -322,6 +336,27 @@ pub enum ResponseState {
     TimedOut,
     /// The server unexpectedly closed the connection for this request.
     Dead,
+    /// The host could not be found.
+    UnknownHost,
+    /// An error occured while reading the response. For example the server could've send invalid data.
+    Error,
+}
+
+impl ResponseState {
+
+    /// Returns `true` if this state is either `Dead`, `TimedOut`, `UnknownHost` or `Error`.
+    pub fn is_error(&self) -> bool {
+        match self {
+            Self::Head(..) => false,
+            Self::Data(..) => false,
+            Self::Done => false,
+            Self::TimedOut => true,
+            Self::Dead => true,
+            Self::UnknownHost => true,
+            Self::Error => true,
+        }
+    }
+
 }
 
 /// This doesn't print the `ResponseState::Data` raw or as a string, instread it just prints the length.
@@ -333,6 +368,8 @@ impl fmt::Debug for ResponseState {
             Self::Data(data) => write!(f, "Data({} bytes)", data.len()),
             Self::Done => write!(f, "Done"),
             Self::Dead => write!(f, "Dead"),
+            Self::UnknownHost => write!(f, "UnknownHost"),
+            Self::Error => write!(f, "Error"),
         }
     }
 }

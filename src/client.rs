@@ -64,6 +64,7 @@ impl<'a> Client<'a> {
             body_begin: 0,
             body_length: 0,
             body_bytes_read: 0,
+            transfer_chunked: false,
             time_created: Instant::now(),
             timeout: request.timeout,
         };
@@ -116,9 +117,21 @@ impl<'a> Client<'a> {
 
                                 let (ip_addr, ttl) = match resp.outcome {
                                     dns::DnsOutcome::Known { addr, ttl } => (addr, ttl),
-                                    dns::DnsOutcome::Unknown => todo!("unknown host"),
-                                    dns::DnsOutcome::Error => todo!("error resolving ip address"),
-                                    dns::DnsOutcome::TimedOut => todo!("dns timed out"),
+                                    dns::DnsOutcome::Unknown => {
+                                        responses.push(Response::new(request.id, ResponseState::UnknownHost));
+                                        Self::finish_request(&io, &mut self.requests, &mut index)?;
+                                        break;
+                                    },
+                                    dns::DnsOutcome::Error => {
+                                        responses.push(Response::new(request.id, ResponseState::Error));
+                                        Self::finish_request(&io, &mut self.requests, &mut index)?;
+                                        break;
+                                    },
+                                    dns::DnsOutcome::TimedOut => {
+                                        responses.push(Response::new(request.id, ResponseState::TimedOut));
+                                        Self::finish_request(&io, &mut self.requests, &mut index)?;
+                                        break;
+                                    },
                                 };
 
                                 let sock_addr = new_sock_addr(ip_addr, 80);
@@ -134,6 +147,8 @@ impl<'a> Client<'a> {
 
                                 request.stream = Some(tcp_stream);
                                 request.state = InternalRequestState::Sending;
+
+                                break;
 
                             }
                             
@@ -189,6 +204,7 @@ impl<'a> Client<'a> {
                                     request.body_length = head.content_length;
                                     request.current_result.drain(..body_begin);
                                     request.body_bytes_read = request.current_result.len();
+                                    request.transfer_chunked = head.transfer_chunked;
                                     request.state = InternalRequestState::RecvBody;
 
                                     responses.push(Response {
@@ -198,16 +214,13 @@ impl<'a> Client<'a> {
 
                                 }
 
-                                let is_done_with_body = has_valid_header && request.body_bytes_read >= request.body_length;
-                                let is_done_without_body = has_valid_header && request.body_length == 0;
+                                let is_done_with_body = has_valid_header && !request.transfer_chunked && request.body_bytes_read >= request.body_length;
+                                let is_done_without_body = has_valid_header && !request.transfer_chunked && request.body_length == 0;
                                 let is_done_or_closed = is_done_with_body | is_done_without_body | was_closed;
 
                                 if is_done_or_closed {
 
-                                    let mut moved_request = self.requests.remove(index as usize);
-                                    index -= 1;
-                                    let mut stream = moved_request.stream.take().expect("No tcp stream.");
-                                    io.registry().deregister(&mut stream)?;
+                                    let moved_request = Self::finish_request(&io, &mut self.requests, &mut index)?;
 
                                     if is_done_with_body {
                                         responses.push(Response::new(moved_request.id, ResponseState::Data(moved_request.current_result)));
@@ -235,25 +248,82 @@ impl<'a> Client<'a> {
                             // see above note
                             if event.is_readable() {
 
-                                let (bytes_read, was_closed) = Self::tcp_read(request)?;
-                                request.body_bytes_read += bytes_read;
+                                let (_bytes_read, was_closed) = Self::tcp_read(request)?;
+
+                                let mut data = Vec::new();
+                                let mut is_done = false;
+
+                                if request.transfer_chunked {
+
+                                    // todo: if we recvHead and recv all chunked data immediatly we
+                                    // will not process it (not like I care)
+
+                                    // body bytes read and body_length is used in chunked transfer
+                                    // mode to denote the current chunks length and how far we are into it
+
+                                    // we loop because there might be multiple / incomplete chunks
+                                    // in one packet
+                                    loop {
+
+                                        if request.body_bytes_read >= request.body_length {
+
+                                            let head_end = request.current_result.windows(2).position(|bytes| bytes == &[0x0D, 0x0A] /* CRLF */).unwrap();
+                                            let head_str = std::str::from_utf8(&request.current_result[..head_end]).expect("Chunk head is not valid Utf8.");
+                                            let chunk_length: usize = usize::from_str_radix(head_str, 16).expect("Invalid chunk head / size number.");
+
+                                            request.body_length = chunk_length;
+                                            request.body_bytes_read = 0;
+                                            request.current_result.drain(..head_end + 2 /* skip the two CLRF bytes */);
+
+                                            if chunk_length == 0 {
+                                                // assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.");
+                                                request.current_result.drain(..2); // remove the trailing (double) CLRF
+                                                is_done = true;
+                                                break;
+                                            }
+
+                                        }
+
+                                        let bytes_just_read = request.current_result.len();
+                                        let total_bytes_read = request.body_bytes_read + bytes_just_read;
+
+                                        if request.body_length >= total_bytes_read {
+                                            // not enough data or exactly enough
+                                            data.extend(request.current_result.drain(..));
+                                            request.body_bytes_read += bytes_just_read;
+                                            break;
+                                        } else {
+                                            // too much data
+                                            data.extend(request.current_result.drain(..request.body_length - request.body_bytes_read));
+                                            // assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.");
+                                            request.current_result.drain(..2); // remove the trailing CRLF
+                                            request.body_bytes_read = request.body_length;
+                                        }
+
+                                    }
+
+                                    // assert!(request.current_result.len() == 0, "is {:?}", String::from_utf8_lossy(&request.current_result));
+
+                                } else {
+
+                                    data.append(&mut request.current_result);
+
+                                    request.body_bytes_read += data.len();
+                                    is_done = request.body_bytes_read >= request.body_length;
+
+                                }
+
 
                                 responses.push(Response {
                                     id: ReqId { inner: request.id },
-                                    state: ResponseState::Data(request.current_result.drain(..).collect()),
+                                    state: ResponseState::Data(data),
                                 });
 
-                                request.current_result = Vec::with_capacity(256);
-
-                                let is_done = request.body_bytes_read >= request.body_length;
                                 let is_done_or_closed = is_done | was_closed;
 
                                 if is_done_or_closed {
 
-                                    let mut moved_request = self.requests.remove(index as usize);
-                                    index -= 1;
-                                    let mut stream = moved_request.stream.take().expect("No tcp stream.");
-                                    io.registry().deregister(&mut stream)?;
+                                    let moved_request = Self::finish_request(&io, &mut self.requests, &mut index)?;
 
                                     if is_done {
                                         responses.push(Response::new(moved_request.id, ResponseState::Done));
@@ -279,6 +349,17 @@ impl<'a> Client<'a> {
         }
 
         Ok(responses)
+
+    }
+
+    fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest<'a>>, index: &'d mut isize) -> io::Result<InternalRequest<'a>> {
+
+        let mut request = requests.remove(*index as usize);
+        let mut stream = request.stream.take().expect("No stream.");
+        io.registry().deregister(&mut stream)?;
+        *index -= 1;
+
+        Ok(request)
 
     }
 
@@ -325,6 +406,7 @@ struct InternalRequest<'a> {
     body_begin: usize,
     body_length: usize,
     body_bytes_read: usize,
+    transfer_chunked: bool, // if `true` the message is handeled as chunked transfer encoding
     time_created: Instant,
     timeout: Option<Duration>,
 }

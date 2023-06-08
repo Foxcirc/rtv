@@ -49,6 +49,8 @@ impl<'a> SimpleClient<'a> {
                     ResponseState::Done => break 'ev,
                     ResponseState::Dead => return Err(RequestError::Dead),
                     ResponseState::TimedOut => return Err(RequestError::TimedOut),
+                    ResponseState::UnknownHost => return Err(RequestError::UnknownHost),
+                    ResponseState::Error => return Err(RequestError::Error),
                 }
             }
 
@@ -103,6 +105,8 @@ impl<'a> SimpleClient<'a> {
                     ResponseState::Done => break 'ev,
                     ResponseState::Dead => return Err(RequestError::Dead),
                     ResponseState::TimedOut => return Err(RequestError::TimedOut),
+                    ResponseState::UnknownHost => return Err(RequestError::UnknownHost),
+                    ResponseState::Error => return Err(RequestError::Error),
                 }
             }
 
@@ -115,7 +119,7 @@ impl<'a> SimpleClient<'a> {
 
     }
 
-    pub fn send_many(&mut self, input: Vec<impl Into<Request<'a>>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
+    pub fn many(&mut self, input: Vec<impl Into<Request<'a>>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
 
         let num_requests = input.len();
 
@@ -156,7 +160,7 @@ impl<'a> SimpleClient<'a> {
                 match response.state {
                     ResponseState::Head(head) => response_builders[*idx].as_mut().expect("No builder.").head = Some(head),
                     ResponseState::Data(mut some_data) => response_builders[*idx].as_mut().expect("No builder.").body.append(&mut some_data),
-                    ResponseState::Done | ResponseState::Dead | ResponseState::TimedOut => {
+                    ResponseState::Done | ResponseState::Dead | ResponseState::TimedOut | ResponseState::UnknownHost | ResponseState::Error => {
                         let result = match response.state {
                             ResponseState::Done => {
                                 let data = response_builders[*idx].take().expect("No builder.");
@@ -165,12 +169,14 @@ impl<'a> SimpleClient<'a> {
                             },
                             ResponseState::Dead => Err(RequestError::Dead),
                             ResponseState::TimedOut => Err(RequestError::TimedOut),
+                            ResponseState::UnknownHost => Err(RequestError::UnknownHost),
+                            ResponseState::Error => Err(RequestError::Error),
                             _ => unreachable!(),
                         };
                         responses[*idx] = result;
                         counter += 1;
                         if counter == num_requests { break 'ev }
-                    }
+                    },
                 }
 
             }
@@ -240,7 +246,11 @@ impl<'a, 'b> io::Read for BodyReader<'a, 'b> {
                         self.is_done = true;
                         read_enough = true;
                     },
-                    _ => todo!(),
+                    ResponseState::Dead => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, RequestError::Dead)),
+                    ResponseState::TimedOut => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::TimedOut)),
+                    ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::UnknownHost)),
+                    ResponseState::Error => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::Error)),
+                    ResponseState::Head(..) => unreachable!(),
                 }
 
             }
@@ -289,6 +299,8 @@ pub enum RequestError {
     Io(io::Error),
     Dead,
     TimedOut,
+    UnknownHost,
+    Error,
 }
 
 impl fmt::Display for RequestError {
@@ -296,7 +308,9 @@ impl fmt::Display for RequestError {
         match self {
             Self::Io(err) => write!(f, "I/O Error: {}", err),
             Self::Dead => write!(f, "Dead: The server closed the connection unexpectedly."),
-            Self::TimedOut => write!(f, "TimedOut: Request timed out.")
+            Self::TimedOut => write!(f, "TimedOut: Request timed out."),
+            Self::UnknownHost => write!(f, "UnknownHost: The host's IP address could not be resolved."),
+            Self::Error => write!(f, "Error: There was an error receiving the request."),
         }
     }
 }

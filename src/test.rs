@@ -85,6 +85,24 @@ fn simple_request() {
 }
 
 #[test]
+fn chunked_request() {
+
+    let mut client = SimpleClient::new().unwrap();
+
+    let resp = client.send(Request::get().host("www.google.com")).unwrap();
+
+    let te = resp.head.get_header("Transfer-Encoding").unwrap();
+
+    println!("Got a response!");
+    println!("Transfer-Encoding: {}", te);
+
+    let body_str = String::from_utf8_lossy(&resp.body);
+    // println!("{}", body_str);
+    println!("Length = {}", body_str.len());
+
+}
+
+#[test]
 fn many_request() {
 
     const NUM_REQUESTS: usize = 16;
@@ -96,7 +114,7 @@ fn many_request() {
     let mut reqs = vec![req; NUM_REQUESTS];
     reqs.push(other_req);
 
-    let resps = client.send_many(reqs).unwrap();
+    let resps = client.many(reqs).unwrap();
 
     println!("Total requests: {}", NUM_REQUESTS + 1);
     println!("Total responses: {}", resps.len());
