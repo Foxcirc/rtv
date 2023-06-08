@@ -3,6 +3,76 @@ use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashM
 use mio::net::TcpStream;
 use crate::{dns, util::{new_sock_addr, notconnected, register_all, wouldblock, is_elapsed}, ResponseHead, Request, ReqId, Response, ResponseState};
 
+/// A flexible HTTP client.
+///
+/// Use the client if you wanna have controll over `mio` yourself.
+/// You should look at the documentation of the individual methods for more info on
+/// what exactly they do.
+///
+/// In general, you pass the client a handle to you `Poll` when you send a request.
+/// Inside you `mio` event loop you then call the `pump` function, which drives the request
+/// to completion.
+///
+/// # Example
+///
+/// This is more or less a full blown example on what it takes to correctly
+/// send and receive a request.
+///
+/// ```rust
+///
+/// let io = mio::Poll::new()?;
+/// let mut client = rtv::Client::new(mio::Token(0));
+///
+/// let request = Request::get().host("example.com");
+/// let _id = client.send(&io, mio::Token(2), request)?;
+///
+/// let mut response_body = Vec::new();
+///
+/// 'ev: loop {
+///     
+///     io.poll(&mut events, None)?;
+///     
+///     for resp in client.pump(&io, &events)? {
+///         match resp.state {
+///             rtv::ResponseState::Head(head) => {
+///                 // the head contains headers etc.
+///                 pritnln!("Content-Length: {}", head.content_length);
+///                 pritnln!("Some header: {}", head.headers[0]);
+///             },
+///             rtv::ResponseState::Data(some_data) => {
+///                 // you will receive data in small chunks as it comes in
+///                 response_body.extend_from_slice(&some_data);
+///             },
+///             rtv::ResponseState::Done => {
+///                 break 'ev;
+///             },
+///             other => panic!("Error: {}", other),
+///         };
+///     };
+///     
+///     events.clear();
+///
+/// }
+///
+/// let body_str = str::from_utf8(&response_body)?;
+/// println!("{}", body_str);
+///
+/// ```
+/// 
+/// # Timeouts
+///
+/// You can set a timeout for every individual request that will even be
+/// applied to dns resolution.
+/// Remeber to pass the smallest timeout for any of the requests you sent into the
+/// `mio::Poll::poll` function.
+/// You need to do this because when a request times out no event is generated.
+///
+/// ```rust
+/// client.send(&io, req1); // imagine 750ms timeout set on this request
+/// client.send(&io, req2); // imagine 3s timeout set on this other one
+/// io.poll(&mut events, Some(Duration::from_millis(750)))?; // poll with smallest timeout
+/// ```
+///
 pub struct Client<'a> {
     dns: dns::DnsClient<'a>,
     dns_cache: HashMap<&'a str, Connection>,
@@ -12,6 +82,10 @@ pub struct Client<'a> {
 
 impl<'a> Client<'a> {
 
+    /// Creates a new client.
+    ///
+    /// The token you pass in will be used for dns resolution as
+    /// this requires only one socket.
     pub fn new(token: mio::Token) -> Self {
         Self {
             dns: dns::DnsClient::new(token),
@@ -21,6 +95,28 @@ impl<'a> Client<'a> {
         }
     }
 
+    /// Send a request.
+    ///
+    /// The token you pass in will be used for this request's TCP connection.
+    /// It will be available again once the request completed.
+    ///
+    /// This function will return a [`ReqId`] that can be used to check which response_body
+    /// belongs to which request later.
+    ///
+    /// For more information on how to create a request see [`Request`] and [`RequestBuilder`](crate::RequestBuilder).
+    /// If you wanna set a timeout, you can do that when creating a request.
+    /// Currently `keep-alive` is **not** supported.
+    /// 
+    /// This function can take anything that implements `Into<Request>` so you can pass it a
+    /// `Request` or a `RequestBuilder`, both will work.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let request = Request::get().host("example.com");
+    /// client.send(&io, mio::Token(1), request)?; // io is the mio::Poll
+    /// ```
+    ///
     pub fn send(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request<'a>>) -> io::Result<ReqId> {
 
         let request = input.into();
@@ -75,6 +171,34 @@ impl<'a> Client<'a> {
 
     }
 
+    /// Drive all sent requests to completion and get the responses.
+    ///
+    /// The `pump` function must be executed everytime an event is generated which
+    /// belongs to this `Client`. You don't need to match against the event token
+    /// yourself though as this is done internally.
+    /// All events not belonging to this `Client` will be ignored.
+    ///
+    /// This function will return a `Vec` of responses, that contain the [`ReqId`] of
+    /// the request that belongs to the response.
+    /// The returned `Vec` may be empty, for example if the event belonged to dns resolution.
+    ///
+    /// In general a request will go through following stages:
+    /// 1. Dns resolution, which will generate one or more events.
+    /// 2. Receiving the head, with information about the response such as the content length
+    ///    ([`ResponseState::Head`]).
+    /// 3. Receiving the body, which will generate multiple events and responses
+    ///    ([`ResponseState::Data`]).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let resps = client.pump(&io, &events)?;
+    /// if resps.is_empty() { println!("Got an event but no response yet!") }
+    /// for resp in resps {
+    ///     println!("Got a response: {:?}", resp.state);
+    /// }
+    /// ```
+    ///
     pub fn pump(&mut self, io: &mio::Poll, events: &mio::Events) -> io::Result<Vec<Response>> {
 
         let mut responses = Vec::new();

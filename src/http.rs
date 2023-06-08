@@ -115,18 +115,25 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 /// Represents an HTTP request.
 /// You can build a request either through this struct directly
 /// or through a [`RequestBuilder`].
+///
 /// # Example
-/// Create a request directly.
-/// ```rust
-/// let req = Request {
-///     uri: Uri { host: "example.com", path: "" },
-///     ..Default::default(),
-/// };
-/// ```
+///
 /// Create a request using a builder.
+///
 /// ```rust
 /// let req = Request::get().host("example.com");
 /// ```
+///
+/// Create a request directly.
+///
+/// ```rust
+/// let req = Request {
+///     uri: Uri { host: "example.com", path: "" },
+///     timeout: Some(Duration::from_secs(2)),
+///     ..Default::default(),
+/// };
+/// ```
+///
 #[derive(Clone, Default)]
 pub struct Request<'a> {
     pub timeout: Option<Duration>,

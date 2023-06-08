@@ -3,6 +3,10 @@ use std::{io, iter, time::Duration, fmt, collections::HashMap, error};
 
 use crate::{Client, Request, ResponseHead, ResponseState};
 
+// The `SimpleClient` still allows you to:
+//     1. Send a single request and block until the response arrives.
+//     2. Send multiple requests at the same time and block until all responses arrived.
+//     3. Send a single request and streaming the request body.
 pub struct SimpleClient<'a> {
     io: mio::Poll,
     client: Client<'a>,
