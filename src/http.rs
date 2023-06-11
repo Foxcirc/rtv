@@ -16,6 +16,20 @@ pub enum Method {
     Trace,
 }
 
+/// If the connection is secure or not.
+///
+/// ```
+/// Plain = HTTP
+/// Secure = HTTPS
+/// ```
+///
+#[derive(Clone, Default)]
+pub enum Mode {
+    #[default]
+    Plain,
+    Secure,
+}
+
 /// An HTTP uri.
 /// The path may start with a `/` or it may not, this is handeled internally.
 #[derive(Clone, Default)]
@@ -62,6 +76,17 @@ impl<'a> RequestBuilder<'a> {
 
     pub fn method(mut self, method: Method) -> Self {
         self.request.method = method;
+        self
+    }
+
+    pub fn mode(mut self, mode: Mode) -> Self {
+        self.request.mode = mode;
+        self
+    }
+
+    /// Sets `mode` to [`Mode::Secure`]
+    pub fn secure(mut self) -> Self {
+        self.request.mode = Mode::Secure;
         self
     }
 
@@ -138,6 +163,7 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 pub struct Request<'a> {
     pub timeout: Option<Duration>,
     pub method: Method,
+    pub mode: Mode,
     pub uri: Uri<'a>,
     pub headers: Vec<Header<'a>>,
     pub body: &'a [u8],
@@ -188,19 +214,22 @@ impl<'a> Request<'a> {
             headers += name;
             headers += ": ";
             headers += value;
-            headers += "\n";
+            headers += "\r\n";
         }
 
         headers += "Content-Length: ";
         headers += &self.body.len().to_string();
-        headers += "\n";
+        headers += "\r\n";
+
+        headers += "Connection: close";
+        headers += "\r\n";
 
         headers += "Accept-Encoding: identity";
-        headers += "\n";
+        headers += "\r\n";
 
         let trimmed_path = path.trim_start_matches('/');
 
-        let head = format!("{} /{} HTTP/1.1\nHost: {}\n{}\n", method, trimmed_path, host, headers);
+        let head = format!("{} /{} HTTP/1.1\r\nHost: {}\r\n{}\r\n", method, trimmed_path, host, headers);
         let mut head_bytes = head.into_bytes();
 
         head_bytes.extend_from_slice(self.body);

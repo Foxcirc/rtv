@@ -1,10 +1,10 @@
 
 use mio::net::UdpSocket;
 use std::{io, net::{SocketAddr, Ipv4Addr}, fmt, time::{self, Duration, Instant}};
-use crate::util::{new_sock_addr, register_all, wouldblock, reregister_all, is_elapsed};
+use crate::util::{make_socket_addr, register_all, wouldblock, reregister_all, is_elapsed};
 
-const ME:  SocketAddr = new_sock_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
-const DNS: SocketAddr = new_sock_addr(Ipv4Addr::new(8, 8, 8, 8), 53);
+const ME:  SocketAddr = make_socket_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
+const DNS: SocketAddr = make_socket_addr(Ipv4Addr::new(8, 8, 8, 8), 53);
 
 pub(crate) struct DnsClient<'a> {
     pub(crate) token: mio::Token,

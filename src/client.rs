@@ -1,7 +1,8 @@
 
-use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::SocketAddr};
+use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, sync::Arc};
 use mio::net::TcpStream;
-use crate::{dns, util::{new_sock_addr, notconnected, register_all, wouldblock, is_elapsed}, ResponseHead, Request, ReqId, Response, ResponseState};
+use webpki_roots::TLS_SERVER_ROOTS;
+use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, is_elapsed}, ResponseHead, Request, ReqId, Response, ResponseState, Mode};
 
 /// A flexible HTTP client.
 ///
@@ -23,7 +24,7 @@ use crate::{dns, util::{new_sock_addr, notconnected, register_all, wouldblock, i
 /// let io = mio::Poll::new()?;
 /// let mut client = rtv::Client::new(mio::Token(0));
 ///
-/// let request = Request::get().host("example.com");
+/// let request = Request::get().host("example.com").https();
 /// let _id = client.send(&io, mio::Token(2), request)?;
 ///
 /// let mut response_body = Vec::new();
@@ -75,9 +76,10 @@ use crate::{dns, util::{new_sock_addr, notconnected, register_all, wouldblock, i
 ///
 pub struct Client<'a> {
     dns: dns::DnsClient<'a>,
-    dns_cache: HashMap<&'a str, Connection>,
+    dns_cache: HashMap<&'a str, CachedAddr>,
     requests: Vec<InternalRequest<'a>>,
     next_id: usize,
+    tls_config: Arc<rustls::ClientConfig>,
 }
 
 impl<'a> Client<'a> {
@@ -87,12 +89,17 @@ impl<'a> Client<'a> {
     /// The token you pass in will be used for dns resolution as
     /// this requires only one socket.
     pub fn new(token: mio::Token) -> Self {
+
+        let tls_config = Self::make_tls_config();
+        
         Self {
             dns: dns::DnsClient::new(token),
             dns_cache: HashMap::new(),
             requests: Vec::new(),
+            tls_config: Arc::new(tls_config),
             next_id: 0,
         }
+
     }
 
     /// Send a request.
@@ -126,35 +133,37 @@ impl<'a> Client<'a> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
-        let maybe_conn = self.dns_cache.get(request.uri.host);
+        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
 
-        let (stream, state) = match maybe_conn {
+        let maybe_cached = self.dns_cache.get(request.uri.host);
 
-            Some(conn) if !is_elapsed(conn.time_created, Some(conn.ttl)) => {
+        let (connection, state) = match maybe_cached {
 
-                let mut tcp_stream = TcpStream::connect(conn.sock_addr)?;
-                register_all(io, &mut tcp_stream, token)?;
+            Some(cached_addr) if !is_elapsed(cached_addr.time_created, Some(cached_addr.ttl)) => {
 
-                (Some(tcp_stream), InternalRequestState::Sending)
+                let mut connection = Connection::new(cached_addr.ip_addr, mode)?;
+                register_all(io, &mut connection, token)?;
+
+                (Some(connection), InternalRequestState::Sending)
 
             },
 
-            _not_cached => {
+            _not_cached_or_invalid => {
 
                 let dns_id = self.dns.resolve(io, request.uri.host, request.timeout)?;
 
-                (None, InternalRequestState::Resolving(dns_id))
+                (None, InternalRequestState::Resolving { id: dns_id, mode: Some(mode) })
 
             },
 
         };
 
-        let request = InternalRequest {
+        let internal_request = InternalRequest {
             host: request.uri.host,
             id,
             token,
             state,
-            stream,
+            connection,
             request_bytes,
             current_result: Vec::new(),
             body_begin: 0,
@@ -165,7 +174,7 @@ impl<'a> Client<'a> {
             timeout: request.timeout,
         };
 
-        self.requests.push(request);
+        self.requests.push(internal_request);
 
         Ok(ReqId { inner: id })
 
@@ -214,7 +223,7 @@ impl<'a> Client<'a> {
                 index -= 1;
 
                 // there may be no stream since dns resolution might not be finished
-                if let Some(mut stream) = moved_request.stream.take() {
+                if let Some(mut stream) = moved_request.connection.take() {
                     io.registry().deregister(&mut stream)?;
                 }
 
@@ -233,7 +242,7 @@ impl<'a> Client<'a> {
 
                 match request.state {
 
-                    InternalRequestState::Resolving(dns_id) => {
+                    InternalRequestState::Resolving { id: dns_id, ref mut mode } => {
 
                         for resp in dns_resps.iter() {
 
@@ -258,19 +267,22 @@ impl<'a> Client<'a> {
                                     },
                                 };
 
-                                let sock_addr = new_sock_addr(ip_addr, 80);
-
-                                self.dns_cache.insert(request.host, Connection {
-                                    sock_addr,
+                                self.dns_cache.insert(request.host, CachedAddr {
+                                    ip_addr,
                                     time_created: Instant::now(),
                                     ttl,
                                 });
 
-                                let mut tcp_stream = TcpStream::connect(sock_addr)?;
-                                register_all(io, &mut tcp_stream, request.token)?;
+                                let mut connection = Connection::new(ip_addr, mode.take().expect("Mode was taken."))?;
+                                register_all(io, &mut connection, request.token)?;
 
-                                request.stream = Some(tcp_stream);
-                                request.state = InternalRequestState::Sending;
+                                let state = match connection {
+                                    Connection::Plain { .. } => InternalRequestState::Sending,
+                                    Connection::Secure { .. } => InternalRequestState::SendingTls,
+                                };
+
+                                request.connection = Some(connection);
+                                request.state = state;
 
                                 break;
 
@@ -280,29 +292,49 @@ impl<'a> Client<'a> {
 
                     },
 
+                    InternalRequestState::SendingTls => {
+
+                        if event.token() == request.token {
+
+                            let connection = request.connection.as_mut().expect("No connection."); // todo: replace all of the "No connection." with "No connection."
+
+                            match connection.peer_addr() {
+                                Ok(..) => {
+                                    if let Connection::Secure { stream } = connection {
+                                        if stream.conn.wants_write() && event.is_writable() {
+                                            stream.conn.write_tls(&mut stream.sock)?; // todo: we can never return any errors just plain, check for that in the whole client codebase. we need to just abort *this* request
+                                        }
+                                        if stream.conn.wants_read() && event.is_readable() {
+                                            stream.conn.read_tls(&mut stream.sock)?;
+                                            stream.conn.process_new_packets().unwrap();
+                                        }
+                                        if !stream.conn.is_handshaking() {
+                                            connection.write(&request.request_bytes)?;
+                                            request.state = InternalRequestState::RecvHead;
+                                        }
+                                    }
+                                },
+                                Err(err) if notconnected(&err) => continue,
+                                Err(_other) => todo!(),
+                            }
+
+                        }
+
+                    },
+
                     InternalRequestState::Sending => {
 
                         if event.token() == request.token {
 
-                            assert!(event.is_writable());
+                            let connection = request.connection.as_mut().expect("No connection.");
 
-                            let tcp_stream = request.stream.as_mut().expect("No tcp stream.");
-
-                            match tcp_stream.peer_addr() {
-
+                            match connection.peer_addr() {
                                 Ok(..) => {
-
-                                    tcp_stream.write_all(&request.request_bytes)?;
+                                    connection.write(&request.request_bytes)?;
                                     request.state = InternalRequestState::RecvHead;
-
                                 },
-
-                                Err(err) if notconnected(&err) => {
-                                    return Ok(responses);
-                                },
-
-                                Err(other) => return Err(other),
-
+                                Err(err) if notconnected(&err) => continue,
+                                Err(_other) => todo!(),
                             }
 
                         }
@@ -317,7 +349,7 @@ impl<'a> Client<'a> {
                             // so we have to check here that this is actually a `readable` event
                             if event.is_readable() {
 
-                                let (_bytes_read, was_closed) = Self::tcp_read(request)?;
+                                let (_bytes_read, was_closed) = Self::client_into_request(request)?;
 
                                 let mut has_valid_header = false;
                                 if let Some((head, body_begin)) = ResponseHead::parse(&request.current_result) {
@@ -372,7 +404,7 @@ impl<'a> Client<'a> {
                             // see above note
                             if event.is_readable() {
 
-                                let (_bytes_read, was_closed) = Self::tcp_read(request)?;
+                                let (_bytes_read, was_closed) = Self::client_into_request(request)?;
 
                                 let mut data = Vec::new();
                                 let mut is_done = false;
@@ -479,7 +511,7 @@ impl<'a> Client<'a> {
     fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest<'a>>, index: &'d mut isize) -> io::Result<InternalRequest<'a>> {
 
         let mut request = requests.remove(*index as usize);
-        let mut stream = request.stream.take().expect("No stream.");
+        let mut stream = request.connection.take().expect("No stream.");
         io.registry().deregister(&mut stream)?;
         *index -= 1;
 
@@ -487,9 +519,9 @@ impl<'a> Client<'a> {
 
     }
 
-    fn tcp_read<'d>(request: &'d mut InternalRequest) -> io::Result<(usize, bool)> {
+    fn client_into_request<'d>(request: &'d mut InternalRequest) -> io::Result<(usize, bool)> {
 
-        let tcp_stream = request.stream.as_mut().expect("No tcp stream.");
+        let tcp_stream = request.connection.as_mut().expect("No connection.");
 
         let mut total_bytes_read = 0;
         let mut closed = false;
@@ -517,6 +549,22 @@ impl<'a> Client<'a> {
 
     }
 
+    fn make_tls_config() -> rustls::ClientConfig {
+
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add_server_trust_anchors(
+            TLS_SERVER_ROOTS.0.iter().map(|ta| rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints))
+        );
+
+        let config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        config
+
+    }
+
 }
 
 struct InternalRequest<'a> {
@@ -525,7 +573,7 @@ struct InternalRequest<'a> {
     host: &'a str,
     request_bytes: Vec<u8>,
     state: InternalRequestState,
-    stream: Option<TcpStream>,
+    connection: Option<Connection>,
     current_result: Vec<u8>,
     body_begin: usize,
     body_length: usize,
@@ -536,15 +584,120 @@ struct InternalRequest<'a> {
 }
 
 enum InternalRequestState {
-    Resolving(dns::DnsId),
+    Resolving { id: dns::DnsId, mode: Option<InternalMode> },
+    SendingTls, // todo make some fields members of these enum variants
     Sending,
     RecvHead,
     RecvBody,
 }
 
-struct Connection {
-    pub(crate) sock_addr: SocketAddr,
+struct CachedAddr {
+    pub(crate) ip_addr: Ipv4Addr,
     pub(crate) time_created: Instant,
     pub(crate) ttl: Duration,
+}
+
+enum InternalMode {
+    Plain,
+    Secure { tls_config: Arc<rustls::ClientConfig>, server_name: rustls::ServerName },
+}
+
+impl InternalMode {
+
+    pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: &str) -> Self {
+        match mode {
+            Mode::Plain => Self::Plain,
+            Mode::Secure => Self::Secure {
+                tls_config: Arc::clone(tls_config),
+                server_name: host.try_into().expect("Invalid host name.")
+            },
+        }
+    }
+
+}
+
+enum Connection {
+    Plain { tcp_stream: TcpStream },
+    Secure { stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream> },
+}
+
+impl Connection {
+
+    pub(crate) fn new(ip_addr: Ipv4Addr, mode: InternalMode) -> io::Result<Self> {
+
+        match mode {
+            InternalMode::Plain => {
+                let tcp_stream = TcpStream::connect(make_socket_addr(ip_addr, 80))?;
+                Ok(Self::Plain { tcp_stream })
+            },
+            InternalMode::Secure { tls_config, server_name } => {
+                let tcp_stream = TcpStream::connect(make_socket_addr(ip_addr, 443))?;
+                let tls_connection = rustls::ClientConnection::new(tls_config, server_name).expect("todo: 1");
+                let stream = rustls::StreamOwned::new(tls_connection, tcp_stream);
+                Ok(Self::Secure { stream })
+            }
+        }
+
+    }
+
+    pub(crate) fn peer_addr(&self) -> io::Result<SocketAddr> {
+        self.tcp_stream().peer_addr()
+    }
+
+    pub(crate) fn tcp_stream(&self) -> &TcpStream {
+        match self {
+            Self::Plain { tcp_stream } => tcp_stream,
+            Self::Secure { stream } => &stream.sock,
+        }
+    }
+
+    pub(crate) fn tcp_stream_mut(&mut self) -> &mut TcpStream {
+        match self {
+            Self::Plain { tcp_stream } => tcp_stream,
+            Self::Secure { stream } => &mut stream.sock,
+        }
+    }
+
+}
+
+impl mio::event::Source for Connection {
+    fn register(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        self.tcp_stream_mut().register(registry, token, interests)
+    }
+    fn reregister(&mut self, registry: &mio::Registry, token: mio::Token, interests: mio::Interest) -> io::Result<()> {
+        self.tcp_stream_mut().reregister(registry, token, interests)
+    }
+    fn deregister(&mut self, registry: &mio::Registry) -> io::Result<()> {
+        self.tcp_stream_mut().deregister(registry)
+    }
+}
+
+impl Read for Connection {
+
+    fn read(&mut self, buff: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain  { tcp_stream } => tcp_stream.read(buff),
+            Self::Secure { stream } => stream.read(buff)
+        }
+    }
+
+}
+
+impl Write for Connection {
+
+    fn write(&mut self, buff: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Plain  { tcp_stream } => tcp_stream.write(buff),
+            Self::Secure { stream } => stream.write(buff)
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Plain  { tcp_stream } => tcp_stream.flush(),
+            Self::Secure { stream } => stream.flush()
+        }
+    }
+
 }
 

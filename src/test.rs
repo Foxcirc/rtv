@@ -48,6 +48,7 @@ fn http_request() {
     let req = Request {
         timeout: None,
         method: crate::Method::Get,
+        mode: crate::Mode::Plain,
         uri: crate::Uri { host: "google.com", path: "" },
         headers: Vec::new(),
         body: b"",
@@ -134,8 +135,6 @@ fn many_request() {
 #[test]
 fn streaming_request() {
 
-    println!("This may take a minute...");
-
     let mut client = SimpleClient::new().unwrap();
 
     let mut resp = client.stream(Request::get().host("httpbin.org")).unwrap();
@@ -145,6 +144,18 @@ fn streaming_request() {
     resp.body.read_to_end(&mut buff).unwrap();
     println!("Actual length: {}", buff.len());
     assert!(resp.head.content_length == buff.len());
+
+}
+
+#[test]
+fn secure_request() {
+
+    let mut client = SimpleClient::new().unwrap();
+
+    let resp = client.send(Request::get().secure().host("www.wikipedia.org")).unwrap();
+
+    println!("done");
+    // println!("resp: {}", resp.into_string_lossy());
 
 }
 

@@ -18,7 +18,7 @@ pub(crate) fn notconnected(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::NotConnected
 }
 
-pub(crate) const fn new_sock_addr(ip_addr: Ipv4Addr, port: u16) -> SocketAddr {
+pub(crate) const fn make_socket_addr(ip_addr: Ipv4Addr, port: u16) -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(ip_addr, port))
 }
 

@@ -1,5 +1,5 @@
 
-use std::{io, iter, time::Duration, fmt, collections::HashMap, error};
+use std::{io, iter, time::Duration, fmt, collections::HashMap, error, string, borrow::Cow};
 
 use crate::{Client, Request, ResponseHead, ResponseState};
 
@@ -39,6 +39,7 @@ impl<'a> SimpleClient<'a> {
 
         let mut response_head = None;
         let mut response_data_buffer = Vec::with_capacity(128);
+        let mut is_done = false;
 
         'ev: loop {
 
@@ -49,8 +50,10 @@ impl<'a> SimpleClient<'a> {
             for response in self.client.pump(&self.io, &events)? {
                 match response.state {
                     ResponseState::Head(head) => { read_enough = true; response_head = Some(head) },
+                    // we need to process all responses, since the whole request
+                    // might have been transmitted in one packet
                     ResponseState::Data(mut some_data) => response_data_buffer.append(&mut some_data),
-                    ResponseState::Done => break 'ev,
+                    ResponseState::Done => { read_enough = true; is_done = true },
                     ResponseState::Dead => return Err(RequestError::Dead),
                     ResponseState::TimedOut => return Err(RequestError::TimedOut),
                     ResponseState::UnknownHost => return Err(RequestError::UnknownHost),
@@ -58,8 +61,6 @@ impl<'a> SimpleClient<'a> {
                 }
             }
 
-            // we need to process all responses, since the whole request
-            // might have been transmitted in one packet
             if read_enough {
                 break 'ev
             }
@@ -76,7 +77,7 @@ impl<'a> SimpleClient<'a> {
             events: mio::Events::with_capacity(4),
             timeout,
             storage: response_data_buffer,
-            is_done: false,
+            is_done,
         };
 
         return Ok(SimpleResponse { head, body: reader });
@@ -216,13 +217,13 @@ impl<'a, 'b> io::Read for BodyReader<'a, 'b> {
 
         let bytes_to_read = buff.len();
 
-        if self.is_done {
+        if self.is_done && self.storage.len() < bytes_to_read {
             let storage_len = self.storage.len();
             for (src, dst) in iter::zip(self.storage.drain(..), buff.iter_mut()) { *dst = src; }
             return Ok(storage_len);
         }
 
-        else if self.storage.len() > bytes_to_read {
+        else if self.storage.len() >= bytes_to_read {
             buff.copy_from_slice(&self.storage[..bytes_to_read]);
             self.storage.drain(..bytes_to_read);
             return Ok(bytes_to_read)
@@ -288,6 +289,18 @@ impl<'a, 'b> io::Read for BodyReader<'a, 'b> {
 pub struct SimpleResponse<B> {
     pub head: ResponseHead,
     pub body: B,
+}
+
+impl SimpleResponse<Vec<u8>> {
+
+    pub fn into_string(self) -> Result<String, string::FromUtf8Error> {
+        String::from_utf8(self.body)
+    }
+
+    pub fn into_string_lossy<'d>(&'d self) -> Cow<'d, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+
 }
 
 impl<B> fmt::Debug for SimpleResponse<B> {

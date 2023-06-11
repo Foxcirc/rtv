@@ -16,4 +16,6 @@ doctest = false
 [dependencies]
 dns-parser = "0.8.0"
 mio = { version = "0.8.8", features = ["net", "os-poll"] }
+rustls = "0.21.1"
+webpki-roots = "0.23.1"
 
