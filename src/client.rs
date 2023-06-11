@@ -296,13 +296,15 @@ impl<'a> Client<'a> {
 
                         if event.token() == request.token {
 
-                            let connection = request.connection.as_mut().expect("No connection."); // todo: replace all of the "No connection." with "No connection."
+                            let connection = request.connection.as_mut().expect("No connection.");
 
                             match connection.peer_addr() {
                                 Ok(..) => {
                                     if let Connection::Secure { stream } = connection {
                                         if stream.conn.wants_write() && event.is_writable() {
-                                            stream.conn.write_tls(&mut stream.sock)?; // todo: we can never return any errors just plain, check for that in the whole client codebase. we need to just abort *this* request
+                                            stream.conn.write_tls(&mut stream.sock)?; // todo:
+                                            // maybe don't returns errors, as this fucks up
+                                            // handling of other requests
                                         }
                                         if stream.conn.wants_read() && event.is_readable() {
                                             stream.conn.read_tls(&mut stream.sock)?;
@@ -315,7 +317,7 @@ impl<'a> Client<'a> {
                                     }
                                 },
                                 Err(err) if notconnected(&err) => continue,
-                                Err(_other) => todo!(),
+                                Err(other) => return Err(other),
                             }
 
                         }
@@ -507,6 +509,13 @@ impl<'a> Client<'a> {
         Ok(responses)
 
     }
+
+    // fn abort_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest<'a>>, index: &'d mut isize) -> io::Result<ResponseState> {
+
+    //     let _request = Self::finish_request(io, requests, index)?;
+    //     Ok(ResponseState::Error)
+
+    // }
 
     fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest<'a>>, index: &'d mut isize) -> io::Result<InternalRequest<'a>> {
 
