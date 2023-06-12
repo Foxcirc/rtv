@@ -22,6 +22,7 @@
 //! - Secure HTTPS requests (using rustls)
 //! - Chunked transfer encoding
 //! - Nonblocking DNS lookup & HTTP requests
+//! - Timeouts
 //! 
 //! ### Currently not implemented features:
 //! - Connection keep alive
