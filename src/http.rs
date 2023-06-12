@@ -27,6 +27,7 @@ pub enum Method {
 pub enum Mode {
     #[default]
     Plain,
+    #[cfg(feature = "tls")]
     Secure,
 }
 
@@ -85,6 +86,7 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Sets `mode` to [`Mode::Secure`]
+    #[cfg(feature = "tls")]
     pub fn secure(mut self) -> Self {
         self.request.mode = Mode::Secure;
         self
@@ -146,7 +148,7 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 /// Create a request using a builder.
 ///
 /// ```rust
-/// let req = Request::get().host("example.com");
+/// let req = Request::get().host("example.com").secure();
 /// ```
 ///
 /// Create a request directly.
@@ -184,11 +186,15 @@ impl<'a> Request<'a> {
     }
 
     /// Build a request with the `GET` method.
+    /// 
+    /// Other methods are available through [`Method`].
     pub fn get() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Get)
     }
 
     /// Build a request with the `POST` method.
+    ///
+    /// Other methods are available through [`Method`].
     pub fn post() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Post)
     }
@@ -368,7 +374,7 @@ pub enum ResponseState {
     Data(Vec<u8>),
     /// The request is done and will not generate any more events.
     Done,
-    /// The request timed out. This will only occur when you set a timeout for a request.
+    /// The request timed out. This will only occur if you set a timeout for a request.
     TimedOut,
     /// The server unexpectedly closed the connection for this request.
     Dead,

@@ -13,9 +13,13 @@ license = "MIT"
 [lib]
 doctest = false
 
+[features]
+default = ["tls"]
+tls = ["rustls", "webpki-roots"]
+
 [dependencies]
 dns-parser = "0.8.0"
 mio = { version = "0.8.8", features = ["net", "os-poll"] }
-rustls = "0.21.1"
-webpki-roots = "0.23.1"
+rustls = { version = "0.21.1", optional = true }
+webpki-roots = { version = "0.23.1", optional = true }
 

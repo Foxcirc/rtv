@@ -1,7 +1,8 @@
 
-use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, sync::Arc};
+use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}};
+#[cfg(feature = "tls")]
+use std::sync::Arc;
 use mio::net::TcpStream;
-use webpki_roots::TLS_SERVER_ROOTS;
 use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, is_elapsed}, ResponseHead, Request, ReqId, Response, ResponseState, Mode};
 
 /// A flexible HTTP client.
@@ -79,7 +80,10 @@ pub struct Client<'a> {
     dns_cache: HashMap<&'a str, CachedAddr>,
     requests: Vec<InternalRequest<'a>>,
     next_id: usize,
+    #[cfg(feature = "tls")]
     tls_config: Arc<rustls::ClientConfig>,
+    #[cfg(not(feature = "tls"))]
+    tls_config: (),
 }
 
 impl<'a> Client<'a> {
@@ -96,8 +100,8 @@ impl<'a> Client<'a> {
             dns: dns::DnsClient::new(token),
             dns_cache: HashMap::new(),
             requests: Vec::new(),
-            tls_config: Arc::new(tls_config),
             next_id: 0,
+            tls_config,
         }
 
     }
@@ -136,14 +140,12 @@ impl<'a> Client<'a> {
         let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
 
         let maybe_cached = self.dns_cache.get(request.uri.host);
-
         let (connection, state) = match maybe_cached {
 
             Some(cached_addr) if !is_elapsed(cached_addr.time_created, Some(cached_addr.ttl)) => {
 
                 let mut connection = Connection::new(cached_addr.ip_addr, mode)?;
                 register_all(io, &mut connection, token)?;
-
                 (Some(connection), InternalRequestState::Sending)
 
             },
@@ -151,7 +153,6 @@ impl<'a> Client<'a> {
             _not_cached_or_invalid => {
 
                 let dns_id = self.dns.resolve(io, request.uri.host, request.timeout)?;
-
                 (None, InternalRequestState::Resolving { id: dns_id, mode: Some(mode) })
 
             },
@@ -240,6 +241,11 @@ impl<'a> Client<'a> {
             let mut index: isize = 0;
             while let Some(request) = self.requests.get_mut(index as usize) {
 
+                if let Some(ref mut connection) = request.connection {
+                    // we need to "pump" rustls so it can do the handshake etc.
+                    connection.complete_io()?;
+                }
+
                 match request.state {
 
                     InternalRequestState::Resolving { id: dns_id, ref mut mode } => {
@@ -276,50 +282,13 @@ impl<'a> Client<'a> {
                                 let mut connection = Connection::new(ip_addr, mode.take().expect("Mode was taken."))?;
                                 register_all(io, &mut connection, request.token)?;
 
-                                let state = match connection {
-                                    Connection::Plain { .. } => InternalRequestState::Sending,
-                                    Connection::Secure { .. } => InternalRequestState::SendingTls,
-                                };
-
                                 request.connection = Some(connection);
-                                request.state = state;
+                                request.state = InternalRequestState::Sending;
 
                                 break;
 
                             }
                             
-                        }
-
-                    },
-
-                    InternalRequestState::SendingTls => {
-
-                        if event.token() == request.token {
-
-                            let connection = request.connection.as_mut().expect("No connection.");
-
-                            match connection.peer_addr() {
-                                Ok(..) => {
-                                    if let Connection::Secure { stream } = connection {
-                                        if stream.conn.wants_write() && event.is_writable() {
-                                            stream.conn.write_tls(&mut stream.sock)?; // todo:
-                                            // maybe don't returns errors, as this fucks up
-                                            // handling of other requests
-                                        }
-                                        if stream.conn.wants_read() && event.is_readable() {
-                                            stream.conn.read_tls(&mut stream.sock)?;
-                                            stream.conn.process_new_packets().unwrap();
-                                        }
-                                        if !stream.conn.is_handshaking() {
-                                            connection.write(&request.request_bytes)?;
-                                            request.state = InternalRequestState::RecvHead;
-                                        }
-                                    }
-                                },
-                                Err(err) if notconnected(&err) => continue,
-                                Err(other) => return Err(other),
-                            }
-
                         }
 
                     },
@@ -332,11 +301,18 @@ impl<'a> Client<'a> {
 
                             match connection.peer_addr() {
                                 Ok(..) => {
-                                    connection.write(&request.request_bytes)?;
+
+                                    match connection.write(&request.request_bytes) {
+                                        Ok(..) => (),
+                                        Err(err) if wouldblock(&err) => continue, // during tls handshake it blocks
+                                        Err(other) => return Err(other),
+                                    };
+
                                     request.state = InternalRequestState::RecvHead;
+
                                 },
                                 Err(err) if notconnected(&err) => continue,
-                                Err(_other) => todo!(),
+                                Err(other) => return Err(other),
                             }
 
                         }
@@ -351,18 +327,21 @@ impl<'a> Client<'a> {
                             // so we have to check here that this is actually a `readable` event
                             if event.is_readable() {
 
-                                let (_bytes_read, was_closed) = Self::client_into_request(request)?;
+                                let (_bytes_read, was_closed) = Self::client_read(request)?;
 
                                 let mut has_valid_header = false;
                                 if let Some((head, body_begin)) = ResponseHead::parse(&request.current_result) {
 
                                     has_valid_header = true;
 
+                                    request.current_result.drain(..body_begin);
+
+                                    request.body_bytes_read = request.current_result.len();
+
                                     request.body_begin = body_begin;
                                     request.body_length = head.content_length;
-                                    request.current_result.drain(..body_begin);
-                                    request.body_bytes_read = request.current_result.len();
                                     request.transfer_chunked = head.transfer_chunked;
+
                                     request.state = InternalRequestState::RecvBody;
 
                                     responses.push(Response {
@@ -406,7 +385,7 @@ impl<'a> Client<'a> {
                             // see above note
                             if event.is_readable() {
 
-                                let (_bytes_read, was_closed) = Self::client_into_request(request)?;
+                                let (bytes_read, was_closed) = Self::client_read(request)?;
 
                                 let mut data = Vec::new();
                                 let mut is_done = false;
@@ -416,7 +395,7 @@ impl<'a> Client<'a> {
                                     // todo: if we recvHead and recv all chunked data immediatly we
                                     // will not process it (not like I care)
 
-                                    // body bytes read and body_length is used in chunked transfer
+                                    // body_length and body_bytes_read is used in chunked transfer
                                     // mode to denote the current chunks length and how far we are into it
 
                                     // we loop because there might be multiple / incomplete chunks
@@ -425,7 +404,7 @@ impl<'a> Client<'a> {
 
                                         if request.body_bytes_read >= request.body_length {
 
-                                            let head_end = request.current_result.windows(2).position(|bytes| bytes == &[0x0D, 0x0A] /* CRLF */).unwrap();
+                                            let head_end = request.current_result.windows(2).position(|bytes| bytes == &[0x0D, 0x0A] /* CRLF */).unwrap(); // todo
                                             let head_str = std::str::from_utf8(&request.current_result[..head_end]).expect("Chunk head is not valid Utf8.");
                                             let chunk_length: usize = usize::from_str_radix(head_str, 16).expect("Invalid chunk head / size number.");
 
@@ -434,7 +413,7 @@ impl<'a> Client<'a> {
                                             request.current_result.drain(..head_end + 2 /* skip the two CLRF bytes */);
 
                                             if chunk_length == 0 {
-                                                // assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.");
+                                                if cfg!(test) { assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.") }
                                                 request.current_result.drain(..2); // remove the trailing (double) CLRF
                                                 is_done = true;
                                                 break;
@@ -446,27 +425,37 @@ impl<'a> Client<'a> {
                                         let total_bytes_read = request.body_bytes_read + bytes_just_read;
 
                                         if request.body_length >= total_bytes_read {
-                                            // not enough data or exactly enough
+                                            
+                                            // not enough data
                                             data.extend(request.current_result.drain(..));
                                             request.body_bytes_read += bytes_just_read;
-                                            break;
+                                            break
+
                                         } else {
-                                            // too much data
+
+                                            // too much data or exactly enough
                                             data.extend(request.current_result.drain(..request.body_length - request.body_bytes_read));
-                                            // assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.");
+                                            if cfg!(test) { assert!(&request.current_result[..2] == &[0x0D, 0x0A], "Expected CLRF.") }
                                             request.current_result.drain(..2); // remove the trailing CRLF
                                             request.body_bytes_read = request.body_length;
+
+                                            // maybe we read exactly one chunk, in which case we
+                                            // need to wait for more data to come
+                                            if request.current_result.is_empty() {
+                                                break
+                                            }
+
                                         }
 
                                     }
 
-                                    // assert!(request.current_result.len() == 0, "is {:?}", String::from_utf8_lossy(&request.current_result));
+                                    if cfg!(test) { assert!(request.current_result.len() == 0, "is {:?}", String::from_utf8_lossy(&request.current_result)) };
 
                                 } else {
 
                                     data.append(&mut request.current_result);
 
-                                    request.body_bytes_read += data.len();
+                                    request.body_bytes_read += bytes_read;
                                     is_done = request.body_bytes_read >= request.body_length;
 
                                 }
@@ -528,7 +517,7 @@ impl<'a> Client<'a> {
 
     }
 
-    fn client_into_request<'d>(request: &'d mut InternalRequest) -> io::Result<(usize, bool)> {
+    fn client_read<'d>(request: &'d mut InternalRequest) -> io::Result<(usize, bool)> {
 
         let tcp_stream = request.connection.as_mut().expect("No connection.");
 
@@ -558,11 +547,12 @@ impl<'a> Client<'a> {
 
     }
 
-    fn make_tls_config() -> rustls::ClientConfig {
+    #[cfg(feature = "tls")]
+    fn make_tls_config() -> Arc<rustls::ClientConfig> {
 
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_server_trust_anchors(
-            TLS_SERVER_ROOTS.0.iter().map(|ta| rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints))
+            webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints))
         );
 
         let config = rustls::ClientConfig::builder()
@@ -570,8 +560,13 @@ impl<'a> Client<'a> {
             .with_root_certificates(root_store)
             .with_no_client_auth();
 
-        config
+        Arc::new(config)
 
+    }
+
+    #[cfg(not(feature = "tls"))]
+    fn make_tls_config() -> () {
+        ()
     }
 
 }
@@ -594,7 +589,6 @@ struct InternalRequest<'a> {
 
 enum InternalRequestState {
     Resolving { id: dns::DnsId, mode: Option<InternalMode> },
-    SendingTls, // todo make some fields members of these enum variants
     Sending,
     RecvHead,
     RecvBody,
@@ -608,11 +602,13 @@ struct CachedAddr {
 
 enum InternalMode {
     Plain,
-    Secure { tls_config: Arc<rustls::ClientConfig>, server_name: rustls::ServerName },
+    #[cfg(feature = "tls")]
+    Secure { tls_config: Arc<rustls::ClientConfig>, server_name: rustls::ServerName }
 }
 
 impl InternalMode {
 
+    #[cfg(feature = "tls")]
     pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: &str) -> Self {
         match mode {
             Mode::Plain => Self::Plain,
@@ -623,10 +619,16 @@ impl InternalMode {
         }
     }
 
+    #[cfg(not(feature = "tls"))]
+    pub(crate) fn from_mode(_mode: Mode, _tls_config: &(), _host: &str) -> Self {
+        Self::Plain
+    }
+
 }
 
 enum Connection {
     Plain { tcp_stream: TcpStream },
+    #[cfg(feature = "tls")]
     Secure { stream: rustls::StreamOwned<rustls::ClientConnection, TcpStream> },
 }
 
@@ -639,6 +641,7 @@ impl Connection {
                 let tcp_stream = TcpStream::connect(make_socket_addr(ip_addr, 80))?;
                 Ok(Self::Plain { tcp_stream })
             },
+            #[cfg(feature = "tls")]
             InternalMode::Secure { tls_config, server_name } => {
                 let tcp_stream = TcpStream::connect(make_socket_addr(ip_addr, 443))?;
                 let tls_connection = rustls::ClientConnection::new(tls_config, server_name).expect("todo: 1");
@@ -656,6 +659,7 @@ impl Connection {
     pub(crate) fn tcp_stream(&self) -> &TcpStream {
         match self {
             Self::Plain { tcp_stream } => tcp_stream,
+            #[cfg(feature = "tls")]
             Self::Secure { stream } => &stream.sock,
         }
     }
@@ -663,8 +667,24 @@ impl Connection {
     pub(crate) fn tcp_stream_mut(&mut self) -> &mut TcpStream {
         match self {
             Self::Plain { tcp_stream } => tcp_stream,
+            #[cfg(feature = "tls")]
             Self::Secure { stream } => &mut stream.sock,
         }
+    }
+
+    pub(crate) fn complete_io(&mut self) -> io::Result<()> {
+
+        #[cfg(feature = "tls")]
+        if let Connection::Secure { stream } = self {
+            match stream.conn.complete_io(&mut stream.sock) {
+                Ok(..) => (),
+                Err(err) if wouldblock(&err) => (),
+                Err(other) => return Err(other),
+            };
+        }
+
+        Ok(())
+
     }
 
 }
@@ -686,6 +706,7 @@ impl Read for Connection {
     fn read(&mut self, buff: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Plain  { tcp_stream } => tcp_stream.read(buff),
+            #[cfg(feature = "tls")]
             Self::Secure { stream } => stream.read(buff)
         }
     }
@@ -697,6 +718,7 @@ impl Write for Connection {
     fn write(&mut self, buff: &[u8]) -> io::Result<usize> {
         match self {
             Self::Plain  { tcp_stream } => tcp_stream.write(buff),
+            #[cfg(feature = "tls")]
             Self::Secure { stream } => stream.write(buff)
         }
     }
@@ -704,6 +726,7 @@ impl Write for Connection {
     fn flush(&mut self) -> io::Result<()> {
         match self {
             Self::Plain  { tcp_stream } => tcp_stream.flush(),
+            #[cfg(feature = "tls")]
             Self::Secure { stream } => stream.flush()
         }
     }

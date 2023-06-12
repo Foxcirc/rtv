@@ -1,12 +1,25 @@
 
-use std::{io, iter, time::Duration, fmt, collections::HashMap, error, string, borrow::Cow};
+use std::{fmt, io, iter::zip, time::Duration, error, string, borrow::Cow};
 
 use crate::{Client, Request, ResponseHead, ResponseState};
 
-// The `SimpleClient` still allows you to:
-//     1. Send a single request and block until the response arrives.
-//     2. Send multiple requests at the same time and block until all responses arrived.
-//     3. Send a single request and streaming the request body.
+/// A simpler HTTP client that handles I/O events for you.
+///
+/// The `SimpleClient` still allows you to:
+///     1. Send a [`single`](SimpleClient::send) request and block until the response has arrived.
+///     2. Send [`many`](SimpleClient::many) requests at the same time and block until all responses have arrived.
+///     3. Send a single request and [`stream`](SimpleClient::stream) the request body.
+///
+/// # Example
+///
+/// It is really easy to send a single request.
+///
+/// ```rust
+/// let mut client = SimpleClient::new()?;
+/// let resp = client.send(Request::get("example.com"))?;
+/// let body_str = String::from_utf8(resp.body); // note: not all websites use UTF-8!
+/// println!("{}", body_str);
+/// ```
 pub struct SimpleClient<'a> {
     io: mio::Poll,
     client: Client<'a>,
@@ -15,6 +28,9 @@ pub struct SimpleClient<'a> {
 
 impl<'a> SimpleClient<'a> {
 
+    /// Creates a new client
+    ///
+    /// The result maybe an IO error produced by `mio`.
     pub fn new() -> RequestResult<Self> {
 
         Ok(Self {
@@ -25,65 +41,10 @@ impl<'a> SimpleClient<'a> {
 
     }
 
-    pub fn stream<'d>(&'d mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<BodyReader<'a, 'd>>> {
-
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
-
-        let request: Request = input.into();
-        let timeout = request.timeout;
-
-        self.client.send(&self.io, mio::Token(id), request)?;
-
-        let mut events = mio::Events::with_capacity(2);
-
-        let mut response_head = None;
-        let mut response_data_buffer = Vec::with_capacity(128);
-        let mut is_done = false;
-
-        'ev: loop {
-
-            self.io.poll(&mut events, timeout)?;
-
-            let mut read_enough = false;
-
-            for response in self.client.pump(&self.io, &events)? {
-                match response.state {
-                    ResponseState::Head(head) => { read_enough = true; response_head = Some(head) },
-                    // we need to process all responses, since the whole request
-                    // might have been transmitted in one packet
-                    ResponseState::Data(mut some_data) => response_data_buffer.append(&mut some_data),
-                    ResponseState::Done => { read_enough = true; is_done = true },
-                    ResponseState::Dead => return Err(RequestError::Dead),
-                    ResponseState::TimedOut => return Err(RequestError::TimedOut),
-                    ResponseState::UnknownHost => return Err(RequestError::UnknownHost),
-                    ResponseState::Error => return Err(RequestError::Error),
-                }
-            }
-
-            if read_enough {
-                break 'ev
-            }
-
-            events.clear();
-
-        }
-
-        let head = response_head.expect("No header?");
-
-        let reader = BodyReader {
-            io: &mut self.io,
-            client: &mut self.client,
-            events: mio::Events::with_capacity(4),
-            timeout,
-            storage: response_data_buffer,
-            is_done,
-        };
-
-        return Ok(SimpleResponse { head, body: reader });
-
-    }
-
+    /// Send a single request.
+    ///
+    /// This method will send a single request and block until the
+    /// response arrives.
     pub fn send(&mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<Vec<u8>>> {
 
         let id = self.next_id;
@@ -124,6 +85,93 @@ impl<'a> SimpleClient<'a> {
 
     }
 
+    /// Stream a single request.
+    ///
+    /// This method will send a single request and return a response once the
+    /// [`ResponseHead`](crate::ResponseHead) has been transmitted.
+    /// The response will contain a [`BodyReader`] as the `body` which implements
+    /// the [`Read`](std::io::Read) trait.
+    ///
+    /// You can receive large responses packet-by-packet using this method.
+    pub fn stream<'d>(&'d mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<BodyReader<'a, 'd>>> {
+
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+
+        let request: Request = input.into();
+        let timeout = request.timeout;
+
+        self.client.send(&self.io, mio::Token(id), request)?;
+
+        let mut events = mio::Events::with_capacity(2);
+
+        let mut response_head = None;
+        let mut response_data_buffer = Vec::with_capacity(128);
+        let mut is_done = false;
+
+        'ev: loop {
+
+            let mut stop = false;
+            self.io.poll(&mut events, timeout)?;
+
+            for response in self.client.pump(&self.io, &events)? {
+                match response.state {
+                    ResponseState::Head(head) => { response_head = Some(head); stop = true },
+                    // we need to process all the response states, since the whole request
+                    // might have been transmitted in one packet
+                    ResponseState::Data(mut some_data) => response_data_buffer.append(&mut some_data),
+                    ResponseState::Done => { is_done = true; stop = true },
+                    ResponseState::Dead => return Err(RequestError::Dead),
+                    ResponseState::TimedOut => return Err(RequestError::TimedOut),
+                    ResponseState::UnknownHost => return Err(RequestError::UnknownHost),
+                    ResponseState::Error => return Err(RequestError::Error),
+                }
+            }
+
+            if stop { break 'ev }
+
+            events.clear();
+
+        }
+
+        let head = response_head.expect("No header?");
+
+        let reader = BodyReader {
+            io: &mut self.io,
+            client: &mut self.client,
+            events: mio::Events::with_capacity(4),
+            timeout,
+            storage: response_data_buffer,
+            is_done,
+        };
+
+        return Ok(SimpleResponse { head, body: reader });
+
+    }
+
+    /// Send many requests.
+    ///
+    /// This method allows sending multiple requests and waiting for them to
+    /// resolve all at the same time.
+    /// 
+    /// The responses will be in the same order as the requests and the number
+    /// if responses will always be the same as the number of requests.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// let reqs = vec![Request::get().host("example.com"), Request::get().host("wikipedia.org")];
+    /// let mut client = SimpleClient::new()?;
+    /// let resps = client.send(reqs)?;
+    /// resps[0]? // belongs to example.com
+    /// resps[1]? // belongs to wikipedia.org
+    /// assert!(resps.len() == reqs.len());
+    /// ```
+    /// 
+    /// Note:
+    /// This method takes `Vec` because in an actual use case you would
+    /// pass a `Vec` into this most of the time. Const arrays are really only practical
+    /// for nice looking examples.
     pub fn many(&mut self, input: Vec<impl Into<Request<'a>>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
 
         let num_requests = input.len();
@@ -132,10 +180,8 @@ impl<'a> SimpleClient<'a> {
         let mut responses = Vec::with_capacity(num_requests);
         for _ in 0..num_requests { responses.push(Err(RequestError::Dead)) }
 
-        let mut id_to_idx = HashMap::with_capacity(num_requests);
-
         let mut smallest_timeout: Option<Duration> = None;
-        for (idx, input_item) in input.into_iter().enumerate() {
+        for input_item in input.into_iter() {
 
             let id = self.next_id;
             self.next_id = self.next_id.wrapping_add(1);
@@ -146,31 +192,35 @@ impl<'a> SimpleClient<'a> {
                 smallest_timeout = request.timeout;
             }
 
-            let id = self.client.send(&self.io, mio::Token(id), request)?;
-            id_to_idx.insert(id, idx);
+            self.client.send(&self.io, mio::Token(id), request)?;
 
         }
 
         let mut events = mio::Events::with_capacity(2 + num_requests);
         let mut counter = 0;
 
+        // todo: use ReqId.inner as index for response array :)
         'ev: loop {
 
             self.io.poll(&mut events, smallest_timeout)?;
 
             for response in self.client.pump(&self.io, &events)? {
                 
-                let idx = id_to_idx.get(&response.id).expect("Invalid id.");
+                // we can use the response id as an index into the response array since it
+                // will be counting up from 0
+                // this is an implementation detail and as such easy to break but it's not like I'm
+                // gonna change the way the indexing works internally
+                let idx = response.id.inner;
 
                 match response.state {
-                    ResponseState::Head(head) => response_builders[*idx].as_mut().expect("No builder.").head = Some(head),
-                    ResponseState::Data(mut some_data) => response_builders[*idx].as_mut().expect("No builder.").body.append(&mut some_data),
+                    ResponseState::Head(head) => response_builders[idx].as_mut().expect("No builder.").head = Some(head),
+                    ResponseState::Data(mut some_data) => response_builders[idx].as_mut().expect("No builder.").body.append(&mut some_data),
                     ResponseState::Done | ResponseState::Dead | ResponseState::TimedOut | ResponseState::UnknownHost | ResponseState::Error => {
                         let result = match response.state {
                             ResponseState::Done => {
-                                let data = response_builders[*idx].take().expect("No builder.");
-                                let head = data.head.expect("No head?!");
-                                Ok(SimpleResponse { head, body: data.body })
+                                let builder = response_builders[idx].take().expect("No builder.");
+                                let head = builder.head.expect("No head?!");
+                                Ok(SimpleResponse { head, body: builder.body })
                             },
                             ResponseState::Dead => Err(RequestError::Dead),
                             ResponseState::TimedOut => Err(RequestError::TimedOut),
@@ -178,7 +228,7 @@ impl<'a> SimpleClient<'a> {
                             ResponseState::Error => Err(RequestError::Error),
                             _ => unreachable!(),
                         };
-                        responses[*idx] = result;
+                        responses[idx] = result;
                         counter += 1;
                         if counter == num_requests { break 'ev }
                     },
@@ -202,6 +252,10 @@ struct ResponseBuilder {
     pub(crate) body: Vec<u8>,
 }
 
+/// Allows streaming the body of a request.
+///
+/// This does some internal buffering.
+/// For more information see [`SimpleClient::stream`].
 pub struct BodyReader<'a, 'b> {
     pub(crate) io: &'b mut mio::Poll,
     pub(crate) client: &'b mut Client<'a>,
@@ -215,76 +269,50 @@ impl<'a, 'b> io::Read for BodyReader<'a, 'b> {
 
     fn read(&mut self, buff: &mut [u8]) -> io::Result<usize> {
 
-        let bytes_to_read = buff.len();
+        if self.storage.is_empty() && !self.is_done {
 
-        if self.is_done && self.storage.len() < bytes_to_read {
-            let storage_len = self.storage.len();
-            for (src, dst) in iter::zip(self.storage.drain(..), buff.iter_mut()) { *dst = src; }
-            return Ok(storage_len);
-        }
+            'ev: loop {
 
-        else if self.storage.len() >= bytes_to_read {
-            buff.copy_from_slice(&self.storage[..bytes_to_read]);
-            self.storage.drain(..bytes_to_read);
-            return Ok(bytes_to_read)
-        }
+                let mut stop = false;
+                self.io.poll(&mut self.events, self.timeout)?;
 
-        let bytes_from_result = bytes_to_read - self.storage.len();
-        let mut result = Vec::with_capacity(128);
+                for response in self.client.pump(&self.io, &self.events)? {
+                    
+                    match response.state {
+                        ResponseState::Data(mut some_data) => { self.storage.append(&mut some_data); stop = true },
+                        ResponseState::Done => { self.is_done = true; stop = true },
+                        ResponseState::Dead => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, RequestError::Dead)),
+                        ResponseState::TimedOut => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::TimedOut)),
+                        ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::UnknownHost)),
+                        ResponseState::Error => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::Error)),
+                        ResponseState::Head(..) => unreachable!(),
+                    }
 
-        'ev: loop {
-
-            self.io.poll(&mut self.events, self.timeout)?;
-
-            let mut read_enough = false;
-
-            for response in self.client.pump(&self.io, &self.events)? {
-                
-                match response.state {
-                    ResponseState::Data(mut some_data) => {
-                        result.append(&mut some_data);
-                        if result.len() >= bytes_from_result {
-                            read_enough = true;
-                        }
-                    },
-                    ResponseState::Done => {
-                        self.is_done = true;
-                        read_enough = true;
-                    },
-                    ResponseState::Dead => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, RequestError::Dead)),
-                    ResponseState::TimedOut => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::TimedOut)),
-                    ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::UnknownHost)),
-                    ResponseState::Error => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::Error)),
-                    ResponseState::Head(..) => unreachable!(),
                 }
 
-            }
+                if stop { break 'ev }
 
-            if read_enough {
-                break 'ev
-            }
+                self.events.clear();
 
-            self.events.clear();
+            }
 
         }
 
-        let bytes_read = result.len();
+        let bytes_to_read = buff.len().min(self.storage.len());
+        let data = self.storage.drain(..bytes_to_read);
 
-        for (src, dst) in iter::zip(self.storage.drain(..), buff.iter_mut()) { *dst = src; }
+        for (src, dst) in zip(data, buff) { *dst = src };
 
-        if result.len() >= bytes_from_result {
-            for (src, dst) in iter::zip(result.drain(..bytes_from_result), buff.iter_mut()) { *dst = src; }
-            self.storage.append(&mut result);
-            Ok(bytes_to_read)
-        } else {
-            for (src, dst) in iter::zip(result.drain(..result.len()), buff.iter_mut()) { *dst = src; }
-            Ok(bytes_read)
-        }
+        Ok(bytes_to_read)
 
     }
 
 }
 
+/// A simple response.
+///
+/// This cannot be errornous at protocol level.
+/// The `body` may be a [`Vec<u8>`](std::vec::Vec), or a [`BodyReader`].
 #[derive(Clone)]
 pub struct SimpleResponse<B> {
     pub head: ResponseHead,
@@ -311,12 +339,18 @@ impl<B> fmt::Debug for SimpleResponse<B> {
 
 pub type RequestResult<T> = Result<T, RequestError>;
 
+/// An error that may occur when sending a request.
 #[derive(Debug)]
 pub enum RequestError {
+    /// An IO error occured, such as a connection loss.
     Io(io::Error),
+    /// The server unexpectedly closed the connection.
     Dead,
+    /// The request timed out. Can only occur if you set a timeout for a request.
     TimedOut,
+    /// The host (for example "google.com") could not be found.
     UnknownHost,
+    /// Another error occured.
     Error,
 }
 
