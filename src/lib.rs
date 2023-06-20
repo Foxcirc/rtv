@@ -34,10 +34,10 @@
 //!
 
 mod util;
-mod http;
 mod dns;
-mod client;
-mod simple;
+pub mod http;
+pub mod client;
+pub mod simple;
 
 #[cfg(test)]
 mod test;
@@ -45,6 +45,6 @@ mod test;
 pub use {
     http::*,
     client::Client,
-    simple::{SimpleClient, SimpleResponse},
+    simple::{SimpleClient, SimpleResponse, RequestError},
 };
 
