@@ -1,10 +1,10 @@
 [package]
 name = "rtv"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 authors = ["foxcirc"]
 description = "Minimal HTTP/S client that supports nonblocking and streaming requests using mio."
-keywords = ["http", "client", "simple", "nonblocking", "streaming"]
+keywords = ["http", "client", "simple", "nonblocking", "mio"]
 categories = ["web-programming", "web-programming::http-client"]
 repository = "https://github.com/Foxcirc/rtv"
 readme = "readme.md"
@@ -19,7 +19,7 @@ tls = ["rustls", "webpki-roots"]
 
 [dependencies]
 dns-parser = "0.8.0"
-mio = { version = "0.8.8", features = ["net", "os-poll"] }
-rustls = { version = "0.21.1", optional = true }
-webpki-roots = { version = "0.23.1", optional = true }
+mio = { version = "0.8.*", features = ["net", "os-poll"] }
+rustls = { version = "0.21.*", optional = true }
+webpki-roots = { version = "0.23.*", optional = true }
 

@@ -6,15 +6,15 @@ use crate::util::{make_socket_addr, register_all, wouldblock, reregister_all, is
 const ME:  SocketAddr = make_socket_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
 const DNS: SocketAddr = make_socket_addr(Ipv4Addr::new(8, 8, 8, 8), 53);
 
-pub(crate) struct DnsClient<'a> {
+pub(crate) struct DnsClient {
     pub(crate) token: mio::Token,
     socket: Option<UdpSocket>,
     write_outdated: bool,
-    requests: Vec<InternalRequest<'a>>,
+    requests: Vec<InternalRequest>,
     next_id: u16,
 }
 
-impl<'a> DnsClient<'a> {
+impl DnsClient {
 
     pub(crate) fn new(token: mio::Token) -> Self {
         Self {
@@ -26,7 +26,7 @@ impl<'a> DnsClient<'a> {
         }
     }
 
-    pub(crate) fn resolve(&mut self, io: &mio::Poll, req: impl Into<DnsRequest<'a>>, timeout: Option<Duration>) -> io::Result<DnsId> {
+    pub(crate) fn resolve(&mut self, io: &mio::Poll, host: impl Into<String>, timeout: Option<Duration>) -> io::Result<DnsId> {
 
         if self.socket.is_none() {
             let mut socket = UdpSocket::bind(ME)?;
@@ -47,7 +47,7 @@ impl<'a> DnsClient<'a> {
         self.requests.push(InternalRequest {
             id,
             state: InternalRequestState::Pending,
-            inner: req.into(),
+            host: host.into(),
             time_created: Instant::now(),
             timeout,
         });
@@ -159,20 +159,10 @@ pub(crate) struct DnsId {
     pub(crate) inner: u16,
 }
 
-pub(crate) struct DnsRequest<'a> {
-    pub name: &'a str,
-}
-
-impl<'a> From<&'a str> for DnsRequest<'a> {
-    fn from(name: &'a str) -> Self {
-        Self { name }
-    }
-}
-
-struct InternalRequest<'a> {
+struct InternalRequest {
     id: u16,
     state: InternalRequestState,
-    inner: DnsRequest<'a>,
+    host: String,
     time_created: Instant,
     timeout: Option<Duration>,
 }
@@ -183,12 +173,12 @@ enum InternalRequestState {
     Sent,
 }
 
-impl<'a> InternalRequest<'a> {
+impl InternalRequest {
 
     fn parse_into_packet(&self) -> Vec<u8> {
 
         let mut packet = dns_parser::Builder::new_query(self.id, true);
-        packet.add_question(self.inner.name, false, dns_parser::QueryType::A, dns_parser::QueryClass::IN);
+        packet.add_question(&self.host, false, dns_parser::QueryType::A, dns_parser::QueryClass::IN);
 
         packet.build().unwrap()
 

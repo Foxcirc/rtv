@@ -75,10 +75,10 @@ use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock
 /// io.poll(&mut events, Some(Duration::from_millis(750)))?; // poll with smallest timeout
 /// ```
 ///
-pub struct Client<'a> {
-    dns: dns::DnsClient<'a>,
-    dns_cache: HashMap<&'a str, CachedAddr>,
-    requests: Vec<InternalRequest<'a>>,
+pub struct Client {
+    dns: dns::DnsClient,
+    dns_cache: HashMap<String, CachedAddr>,
+    requests: Vec<InternalRequest>,
     next_id: usize,
     #[cfg(feature = "tls")]
     tls_config: Arc<rustls::ClientConfig>,
@@ -86,12 +86,12 @@ pub struct Client<'a> {
     tls_config: (),
 }
 
-impl<'a> Client<'a> {
+impl Client {
 
     /// Creates a new client.
     ///
     /// The token you pass in will be used for dns resolution as
-    /// this requires only one socket.
+    /// this requires (only) one socket.
     pub fn new(token: mio::Token) -> Self {
 
         let tls_config = Self::make_tls_config();
@@ -128,7 +128,7 @@ impl<'a> Client<'a> {
     /// client.send(&io, mio::Token(1), request)?; // io is the mio::Poll
     /// ```
     ///
-    pub fn send(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request<'a>>) -> io::Result<ReqId> {
+    pub fn send(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request>) -> io::Result<ReqId> {
 
         let request = input.into();
 
@@ -137,9 +137,9 @@ impl<'a> Client<'a> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
-        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
+        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host.clone());
 
-        let maybe_cached = self.dns_cache.get(request.uri.host);
+        let maybe_cached = self.dns_cache.get(&request.uri.host);
         let (connection, state) = match maybe_cached {
 
             Some(cached_addr) if !is_elapsed(cached_addr.time_created, Some(cached_addr.ttl)) => {
@@ -152,7 +152,7 @@ impl<'a> Client<'a> {
 
             _not_cached_or_invalid => {
 
-                let dns_id = self.dns.resolve(io, request.uri.host, request.timeout)?;
+                let dns_id = self.dns.resolve(io, request.uri.host.clone(), request.timeout)?;
                 (None, InternalRequestState::Resolving { id: dns_id, mode: Some(mode) })
 
             },
@@ -273,7 +273,7 @@ impl<'a> Client<'a> {
                                     },
                                 };
 
-                                self.dns_cache.insert(request.host, CachedAddr {
+                                self.dns_cache.insert(request.host.clone(), CachedAddr {
                                     ip_addr,
                                     time_created: Instant::now(),
                                     ttl,
@@ -506,7 +506,7 @@ impl<'a> Client<'a> {
 
     // }
 
-    fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest<'a>>, index: &'d mut isize) -> io::Result<InternalRequest<'a>> {
+    fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest>, index: &'d mut isize) -> io::Result<InternalRequest> {
 
         let mut request = requests.remove(*index as usize);
         let mut stream = request.connection.take().expect("No stream.");
@@ -571,10 +571,10 @@ impl<'a> Client<'a> {
 
 }
 
-struct InternalRequest<'a> {
+struct InternalRequest {
     id: usize,
     token: mio::Token,
-    host: &'a str,
+    host: String,
     request_bytes: Vec<u8>,
     state: InternalRequestState,
     connection: Option<Connection>,
@@ -609,12 +609,12 @@ enum InternalMode {
 impl InternalMode {
 
     #[cfg(feature = "tls")]
-    pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: &str) -> Self {
+    pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: String) -> Self {
         match mode {
             Mode::Plain => Self::Plain,
             Mode::Secure => Self::Secure {
                 tls_config: Arc::clone(tls_config),
-                server_name: host.try_into().expect("Invalid host name.")
+                server_name: host.as_str().try_into().expect("Invalid host name.")
             },
         }
     }

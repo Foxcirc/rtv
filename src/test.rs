@@ -49,9 +49,9 @@ fn http_request() {
         timeout: None,
         method: crate::Method::Get,
         mode: crate::Mode::Plain,
-        uri: crate::Uri { host: "google.com", path: "" },
+        uri: crate::Uri { host: "google.com".into(), path: "".into() },
         headers: Vec::new(),
-        body: b"",
+        body: "".into(),
     };
 
     let _id = client.send(&io, mio::Token(1), req).unwrap();

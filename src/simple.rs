@@ -20,13 +20,13 @@ use crate::{Client, Request, ResponseHead, ResponseState};
 /// let body_str = String::from_utf8(resp.body); // note: not all websites use UTF-8!
 /// println!("{}", body_str);
 /// ```
-pub struct SimpleClient<'a> {
+pub struct SimpleClient {
     io: mio::Poll,
-    client: Client<'a>,
+    client: Client,
     next_id: usize,
 }
 
-impl<'a> SimpleClient<'a> {
+impl SimpleClient {
 
     /// Creates a new client
     ///
@@ -45,7 +45,7 @@ impl<'a> SimpleClient<'a> {
     ///
     /// This method will send a single request and block until the
     /// response arrives.
-    pub fn send(&mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<Vec<u8>>> {
+    pub fn send(&mut self, input: impl Into<Request>) -> RequestResult<SimpleResponse<Vec<u8>>> {
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -93,7 +93,7 @@ impl<'a> SimpleClient<'a> {
     /// the [`Read`](std::io::Read) trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
-    pub fn stream<'d>(&'d mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<BodyReader<'a, 'd>>> {
+    pub fn stream<'d>(&'d mut self, input: impl Into<Request>) -> RequestResult<SimpleResponse<BodyReader<'d>>> {
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -172,7 +172,7 @@ impl<'a> SimpleClient<'a> {
     /// This method takes `Vec` because in an actual use case you would
     /// pass a `Vec` into this most of the time. Const arrays are really only practical
     /// for nice looking examples.
-    pub fn many(&mut self, input: Vec<impl Into<Request<'a>>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
+    pub fn many(&mut self, input: Vec<impl Into<Request>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
 
         let num_requests = input.len();
 
@@ -256,16 +256,16 @@ struct ResponseBuilder {
 ///
 /// This does some internal buffering.
 /// For more information see [`SimpleClient::stream`].
-pub struct BodyReader<'a, 'b> {
+pub struct BodyReader<'b> {
     pub(crate) io: &'b mut mio::Poll,
-    pub(crate) client: &'b mut Client<'a>,
+    pub(crate) client: &'b mut Client,
     pub(crate) events: mio::Events,
     pub(crate) timeout: Option<Duration>,
     pub(crate) storage: Vec<u8>,
     pub(crate) is_done: bool,
 }
 
-impl<'a, 'b> io::Read for BodyReader<'a, 'b> {
+impl<'b> io::Read for BodyReader<'b> {
 
     fn read(&mut self, buff: &mut [u8]) -> io::Result<usize> {
 
