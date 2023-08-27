@@ -199,7 +199,6 @@ impl SimpleClient {
         let mut events = mio::Events::with_capacity(2 + num_requests);
         let mut counter = 0;
 
-        // todo: use ReqId.inner as index for response array :)
         'ev: loop {
 
             self.io.poll(&mut events, smallest_timeout)?;
@@ -321,12 +320,21 @@ pub struct SimpleResponse<B> {
 
 impl SimpleResponse<Vec<u8>> {
 
+    /// Convert the request body into a `String`.
+    /// Note that the data is assumed to be valid utf8. Text encodings
+    /// are not handeled by this crate.
     pub fn into_string(self) -> Result<String, string::FromUtf8Error> {
         String::from_utf8(self.body)
     }
 
     pub fn into_string_lossy<'d>(&'d self) -> Cow<'d, str> {
         String::from_utf8_lossy(&self.body)
+    }
+
+    /// Convert the request body into a serde json [`Value`](serde_json::Value).
+    #[cfg(feature = "json")]
+    pub fn into_json(self) -> serde_json::Result<serde_json::Value> {
+        serde_json::from_slice(&self.body)
     }
 
 }

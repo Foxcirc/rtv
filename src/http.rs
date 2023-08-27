@@ -1,5 +1,5 @@
 
-use std::{fmt, time::Duration, iter};
+use std::{fmt, time::Duration};
 
 /// An HTTP method.
 /// The default method is `GET`.
@@ -112,7 +112,11 @@ impl RequestBuilder {
 
     /// Insert a header into this request.
     pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.request.headers.push(Header { name: name.into(), value: value.into() });
+        let name_string = name.into();
+        if matches!(&name_string[..], "Connection" | "Accept-Encoding" | "Content-Length") {
+            panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name_string);
+        }
+        self.request.headers.push(Header { name: name_string, value: value.into() });
         self
     }
 
@@ -157,6 +161,11 @@ impl From<RequestBuilder> for Request {
 /// Represents an HTTP request.
 /// You can build a request either through this struct directly
 /// or through a [`RequestBuilder`].
+///
+/// Three headers will be set automatically:
+/// - `Connection: close`
+/// - `Accept-Encoding: identity`
+/// - `Content-Length: body.len()`
 ///
 /// # Example
 ///
@@ -214,17 +223,20 @@ impl Request {
         RequestBuilder::default().method(Method::Post)
     }
 
-    pub(crate) fn format(&self) -> Vec<u8> {
+    /// Format the request into valid HTTP plaintext.
+    ///
+    /// This is for internal use but exposed because it might be useful.
+    pub fn format(&self) -> Vec<u8> {
 
         let method = match self.method {
-            Method::Get => "GET",
-            Method::Post => "POST",
-            Method::Put => "PUT",
-            Method::Delete => "DELETE",
-            Method::Patch => "PATCH",
-            Method::Head => "HEAD",
+            Method::Get     => "GET",
+            Method::Post    => "POST",
+            Method::Put     => "PUT",
+            Method::Delete  => "DELETE",
+            Method::Patch   => "PATCH",
+            Method::Head    => "HEAD",
             Method::Options => "OPTIONS",
-            Method::Trace => "TRACE",
+            Method::Trace   => "TRACE",
         };
 
         let path = &self.uri.path;
@@ -251,11 +263,11 @@ impl Request {
         let trimmed_path = path.trim_start_matches('/');
 
         let head = format!("{} /{} HTTP/1.1\r\nHost: {}\r\n{}\r\n", method, trimmed_path, host, headers);
-        let mut head_bytes = head.into_bytes();
+        let mut bytes = head.into_bytes();
 
-        head_bytes.extend_from_slice(&self.body);
+        bytes.extend_from_slice(&self.body);
 
-        head_bytes
+        bytes
 
     }
 

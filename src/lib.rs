@@ -44,7 +44,7 @@ mod test;
 
 pub use {
     http::*,
-    client::Client,
-    simple::{SimpleClient, SimpleResponse, RequestError},
+    client::*,
+    simple::*,
 };
 
