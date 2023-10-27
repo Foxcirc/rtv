@@ -19,7 +19,7 @@
 //!
 //! ### Supported features:
 //! - Plain HTTP requests
-//! - Secure HTTPS requests (using rustls)
+//! - Secure HTTPS requests
 //! - Chunked transfer encoding
 //! - Nonblocking DNS lookup & HTTP requests
 //! - Timeouts
@@ -30,7 +30,7 @@
 //!
 //! # Features
 //!
-//! The `tls` default-feature enables the use of HTTPS.
+//! The `tls` default-feature enables the use of HTTPS using rustls.
 //!
 
 mod util;

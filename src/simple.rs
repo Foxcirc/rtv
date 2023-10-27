@@ -5,7 +5,7 @@ use crate::{Client, Request, ResponseHead, ResponseState};
 
 /// A simpler HTTP client that handles I/O events for you.
 ///
-/// The `SimpleClient` still allows you to:
+/// The `SimpleClient` allows you to:
 ///     1. Send a [`single`](SimpleClient::send) request and block until the response has arrived.
 ///     2. Send [`many`](SimpleClient::many) requests at the same time and block until all responses have arrived.
 ///     3. Send a single request and [`stream`](SimpleClient::stream) the request body.

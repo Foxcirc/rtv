@@ -438,6 +438,12 @@ impl Client {
 
         if request.transfer_chunked {
 
+            // fast-path to protect against spourious wakeups
+            // for the later code it is expected that valid data is present
+            if request.current_result.is_empty() {
+                return (data, is_done)
+            }
+
             // body_length and body_bytes_read is used in chunked transfer
             // mode to denote the current chunks length and how far we are into it
 
@@ -447,7 +453,7 @@ impl Client {
 
                 if request.body_bytes_read >= request.body_length {
 
-                    let head_end = request.current_result.windows(2).position(|bytes| bytes == &[0x0D, 0x0A] /* CRLF */).expect("Invalid chunk border");
+                    let head_end = request.current_result.windows(2).position(|bytes| bytes == &[0x0D, 0x0A] /* CRLF */).expect("Chunk head is invalid");
                     let head_str = std::str::from_utf8(&request.current_result[..head_end]).expect("Chunk head is not valid Utf8.");
                     let chunk_length: usize = usize::from_str_radix(head_str, 16).expect("Invalid chunk head / size number.");
 
@@ -510,7 +516,7 @@ impl Client {
     fn finish_request<'d>(io: &'d mio::Poll, requests: &'d mut Vec<InternalRequest>, index: &'d mut isize) -> io::Result<InternalRequest> {
 
         let mut request = requests.remove(*index as usize);
-        let mut stream = request.connection.take().expect("No stream.");
+        let mut stream = request.connection.take().expect("No stream");
         io.registry().deregister(&mut stream)?;
         *index -= 1;
 
@@ -518,9 +524,11 @@ impl Client {
 
     }
 
-    fn client_read<'d>(request: &'d mut InternalRequest) -> io::Result<bool> {
+    fn client_read<'d>(request: &'d mut InternalRequest) -> io::Result<bool> { // todo: remove the
+        // scuffed methods that take a &mut InternalRequest and do some more or less specified
+        // stuff to it
 
-        let tcp_stream = request.connection.as_mut().expect("No connection.");
+        let tcp_stream = request.connection.as_mut().expect("No connection");
 
         let mut closed = false;
         loop {
@@ -551,7 +559,9 @@ impl Client {
 
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_server_trust_anchors(
-            webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta| rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints))
+            webpki_roots::TLS_SERVER_ROOTS.0.iter().map(|ta|
+                rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(ta.subject, ta.spki, ta.name_constraints)
+            )
         );
 
         let config = rustls::ClientConfig::builder()
@@ -562,6 +572,8 @@ impl Client {
         Arc::new(config)
 
     }
+
+    // todo: add a with_tls_config method for specific use cases
 
     #[cfg(not(feature = "tls"))]
     fn make_tls_config() -> () {
@@ -587,7 +599,7 @@ struct InternalRequest {
 }
 
 enum InternalRequestState {
-    Resolving { id: dns::DnsId, mode: Option<InternalMode> },
+    Resolving { id: dns::DnsId, mode: Option<InternalMode> }, // todo: move the `mode` out of here?
     Sending,
     RecvHead,
     RecvBody,
