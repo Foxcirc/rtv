@@ -102,9 +102,28 @@ impl Client {
     ///
     /// The token you pass in will be used for dns resolution as
     /// this requires (only) one socket.
+    #[inline(always)]
     pub fn new(token: mio::Token) -> Self {
 
-        let tls_config = Self::make_tls_config();
+        let tls_config = Self::default_tls_config();
+        
+        Self {
+            dns: dns::DnsClient::new(token),
+            dns_cache: HashMap::new(),
+            requests: Vec::new(),
+            next_id: 0,
+            tls_config,
+        }
+
+    }
+
+    /// Creates a new client with a custom [`ClientConfig`](rustls::ClientConfig).
+    ///
+    /// The token you pass in will be used for dns resolution as
+    /// this requires (only) one socket.
+    #[cfg(feature = "tls")]
+    #[inline(always)]
+    pub fn with_tls_config(token: mio::Token, tls_config: Arc<rustls::ClientConfig>) -> Self {
         
         Self {
             dns: dns::DnsClient::new(token),
@@ -135,7 +154,6 @@ impl Client {
     /// let request = Request::get().host("example.com");
     /// client.send(&io, mio::Token(1), request)?; // io is the mio::Poll
     /// ```
-    ///
     pub fn send<'a>(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request<'a>>) -> io::Result<ReqId> {
 
         let request = input.into();
@@ -516,6 +534,7 @@ impl Client {
     /// # Note
     ///
     /// This function comes with a very small runtime cost sinc it has to loop over all current requests.
+    #[inline(always)]
     pub fn timeout(&self) -> Option<Duration> {
         let now = Instant::now();
         self.requests.iter().filter_map(|request|
@@ -524,7 +543,8 @@ impl Client {
     }
 
     #[cfg(feature = "tls")]
-    fn make_tls_config() -> Arc<rustls::ClientConfig> {
+    #[inline(always)]
+    fn default_tls_config() -> Arc<rustls::ClientConfig> {
 
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_server_trust_anchors(
@@ -542,10 +562,8 @@ impl Client {
 
     }
 
-    // todo: add a with_tls_config method for specific use cases
-
     #[cfg(not(feature = "tls"))]
-    fn make_tls_config() -> () {
+    fn default_tls_config() -> () {
         ()
     }
 
