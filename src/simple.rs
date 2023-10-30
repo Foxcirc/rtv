@@ -85,10 +85,12 @@ impl SimpleClient {
 
     }
 
+    // todo: make a function that returns a Future
+
     /// Stream a single request.
     ///
     /// This method will send a single request and return a response once the
-    /// [`ResponseHead`](crate::ResponseHead) has been transmitted.
+    /// [`ResponseHead`] has been transmitted.
     /// The response will contain a [`BodyReader`] as the `body` which implements
     /// the [`Read`](std::io::Read) trait.
     ///
@@ -155,7 +157,7 @@ impl SimpleClient {
     /// resolve all at the same time.
     /// 
     /// The responses will be in the same order as the requests and the number
-    /// if responses will always be the same as the number of requests.
+    /// of responses will always be the same as the number of requests.
     ///
     /// # Example
     ///
@@ -315,18 +317,13 @@ impl SimpleResponse<Vec<u8>> {
     /// Convert the request body into a `String`.
     /// Note that the data is assumed to be valid utf8. Text encodings
     /// are not handeled by this crate.
-    pub fn to_string(self) -> Result<String, string::FromUtf8Error> {
+    pub fn into_string(self) -> Result<String, string::FromUtf8Error> {
         String::from_utf8(self.body)
     }
 
-    pub fn to_string_lossy<'d>(&'d self) -> Cow<'d, str> {
-        String::from_utf8_lossy(&self.body)
-    }
-
-    /// Convert the request body into a serde json [`Value`](serde_json::Value).
-    #[cfg(feature = "json")]
-    pub fn to_json(self) -> serde_json::Result<serde_json::Value> {
-        serde_json::from_slice(&self.body)
+    /// Access the request body as a `&str`.
+    pub fn to_str<'d>(&'d self) -> Result<&'d str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.body)
     }
 
 }

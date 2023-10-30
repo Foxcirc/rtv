@@ -69,7 +69,6 @@ pub struct ReqId {
 #[derive(Default, Clone)]
 pub struct RequestBuilder<'a> {
     request: Request<'a>, // only partially populated
-    queries: String,
 }
 
 impl<'a> RequestBuilder<'a> {
