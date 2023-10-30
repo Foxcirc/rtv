@@ -1,4 +1,5 @@
 
+//! This module contains an HTTP [`Client`] that runs ontop of [`mio`].
 
 use mio::net::TcpStream;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
@@ -14,13 +15,13 @@ use std::sync::Arc;
 /// what exactly they do.
 ///
 /// In general, you pass the client a handle to your `Poll` when you send a request.
-/// Inside you `mio` event loop, when you get an event, you then call the `pump` function,
+/// Inside you `mio` event loop, when you get an event, you then call the [`Client::pump`] function,
 /// which drives the request to completion.
 ///
 /// # Example
 ///
 /// This is more or less a full blown example on what it takes to correctly
-/// send and receive a request.
+/// send a request.
 ///
 /// ```rust
 ///

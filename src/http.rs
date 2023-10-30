@@ -1,4 +1,10 @@
 
+//! This module contains definitions for the HTTP types that the user interacts with.
+//!
+//! It provides a [`RequestBuilder`] that allows constructing requests
+//! as well as the [`Response`] type used to receive responses using a [`Client`](crate::Client).
+//! The [`SimpleClient`](crate::SimpleClient) uses it's own response types.
+
 use std::{fmt, time::Duration};
 
 /// An HTTP method.
@@ -57,15 +63,15 @@ pub struct Header<'a> {
 ///
 /// You can use it to check if a response belongs to a request.
 ///
-/// The inner number will count up by `1` (wrapping) for every request sent
-/// by a perticular client. You can rely on this behaviour.
+/// The inner number will start at `0` and count up by `1` (wrapping) for every
+/// request sent by a perticular client. You can rely on this behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReqId {
     pub inner: usize,
 }
 
 /// Used to build a request.
-/// See [`Request::build`].
+/// See [`Request`].
 #[derive(Default, Clone)]
 pub struct RequestBuilder<'a> {
     request: Request<'a>, // only partially populated
@@ -84,12 +90,6 @@ impl<'a> RequestBuilder<'a> {
     #[inline(always)]
     pub fn method(mut self, method: Method) -> Self {
         self.request.method = method;
-        self
-    }
-
-    #[inline(always)]
-    pub fn mode(mut self, mode: Mode) -> Self {
-        self.request.mode = mode;
         self
     }
 
@@ -163,7 +163,7 @@ impl<'a> RequestBuilder<'a> {
 
     /// Update the request body with the specified data.
     #[inline(always)]
-    pub fn send(mut self, body: impl AsRef<&'a [u8]>) -> Self {
+    pub fn send(mut self, body: &'a (impl AsRef<[u8]> + ?Sized)) -> Self {
         self.request.body = body.as_ref();
         self
     }
@@ -252,7 +252,7 @@ impl<'a> Request<'a> {
         RequestBuilder::default().method(Method::Post)
     }
 
-    pub fn format(&self) -> Vec<u8> {
+    pub(crate) fn format(&self) -> Vec<u8> {
 
         let method = match self.method {
             Method::Get     => "GET",

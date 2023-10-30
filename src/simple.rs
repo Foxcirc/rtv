@@ -1,5 +1,7 @@
 
-use std::{fmt, io, iter::zip, time::Duration, error, string, borrow::Cow};
+//! This module contains a [`SimpleClient`] that allows sending simple requests.
+
+use std::{fmt, io, iter::zip, time::Duration, error, string};
 
 use crate::{Client, Request, ResponseHead, ResponseState};
 

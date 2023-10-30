@@ -34,14 +34,30 @@ fn dns_resolve() {
 }
 
 #[test]
+fn request_builder() {
+
+    Request::build()
+        .https()
+        .method(crate::Method::Get)
+        .host("example.com")
+        .path("/foo")
+        .query("bar", "baz")
+        .header("Timeout", "infinite")
+        .user_agent("foxcirc's rtv")
+        .send("send &str")
+        .send(b"send &[u8]")
+        .send(&[0, 1, 2, 3])
+        .finish();
+
+}
+
+#[test]
 fn http_request() {
 
     let mut io = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(16);
 
     let mut client = Client::new(mio::Token(0));
-
-    // todo: make the request not allocate but take references since these are turned into a Vec<u8> anyways
 
     let req = Request::get()
         .secure()
