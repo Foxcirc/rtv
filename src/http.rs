@@ -163,7 +163,7 @@ impl<'a> RequestBuilder<'a> {
 
     /// Update the request body with the specified data.
     #[inline(always)]
-    pub fn send(mut self, body: &'a (impl AsRef<[u8]> + ?Sized)) -> Self {
+    pub fn send<T: AsRef<[u8]> + ?Sized>(mut self, body: &'a T) -> Self {
         self.request.body = body.as_ref();
         self
     }
