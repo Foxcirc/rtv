@@ -1,6 +1,12 @@
 
 use mio::{event::Source, Interest};
-use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, io};
+use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, io, hash::{Hasher, Hash}, collections::hash_map::DefaultHasher};
+
+pub(crate) fn hash(input: impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    input.hash(&mut hasher);
+    hasher.finish()
+}
 
 pub fn wouldblock(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock

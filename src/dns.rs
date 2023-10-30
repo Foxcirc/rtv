@@ -29,7 +29,7 @@ impl DnsClient {
         }
     }
 
-    pub(crate) fn resolve(&mut self, io: &mio::Poll, host: impl Into<String>, timeout: Option<Duration>) -> io::Result<DnsId> {
+    pub(crate) fn resolve(&mut self, io: &mio::Poll, host: &str, timeout: Option<Duration>) -> io::Result<DnsId> {
 
         if self.socket.is_none() {
             let mut socket = UdpSocket::bind(ME)?;
@@ -39,7 +39,7 @@ impl DnsClient {
         }
         
         if self.write_outdated {
-            let socket = self.socket.as_mut().expect("No socket.");
+            let socket = self.socket.as_mut().expect("no socket");
             reregister_all(io, socket, self.token)?;
             self.write_outdated = false;
         }
@@ -50,7 +50,7 @@ impl DnsClient {
         self.requests.push(InternalRequest {
             id,
             state: InternalRequestState::Pending,
-            host: host.into(),
+            packet: new_dns_packet(id, host),
             time_created: Instant::now(),
             timeout,
         });
@@ -100,8 +100,7 @@ impl DnsClient {
 
                             if req.state == InternalRequestState::Pending {
 
-                                let bytes = req.parse_into_packet();
-                                socket.send(&bytes)?;
+                                socket.send(&req.packet)?;
 
                                 req.state = InternalRequestState::Sent;
                                 self.write_outdated = false;
@@ -166,7 +165,7 @@ pub(crate) struct DnsId {
 struct InternalRequest {
     id: u16,
     state: InternalRequestState,
-    host: String,
+    packet: Vec<u8>,
     time_created: Instant,
     timeout: Option<Duration>,
 }
@@ -177,16 +176,12 @@ enum InternalRequestState {
     Sent,
 }
 
-impl InternalRequest {
+fn new_dns_packet(id: u16, hostname: &str) -> Vec<u8> {
 
-    fn parse_into_packet(&self) -> Vec<u8> {
+    let mut packet = dns_parser::Builder::new_query(id, true);
+    packet.add_question(hostname, false, dns_parser::QueryType::A, dns_parser::QueryClass::IN);
 
-        let mut packet = dns_parser::Builder::new_query(self.id, true);
-        packet.add_question(&self.host, false, dns_parser::QueryType::A, dns_parser::QueryClass::IN);
-
-        packet.build().unwrap()
-
-    }
+    packet.build().unwrap()
 
 }
 

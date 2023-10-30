@@ -3,7 +3,7 @@
 
 use mio::net::TcpStream;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
-use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader};
+use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, hash}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader};
 
 #[cfg(feature = "tls")]
 use std::sync::Arc;
@@ -87,7 +87,7 @@ use std::sync::Arc;
 /// which does the calculation for you.
 pub struct Client {
     dns: dns::DnsClient,
-    dns_cache: HashMap<String, CachedAddr>,
+    dns_cache: HashMap<u64, CachedAddr>,
     requests: Vec<InternalReq>,
     next_id: usize,
     #[cfg(feature = "tls")]
@@ -165,7 +165,7 @@ impl Client {
 
         let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
 
-        let maybe_cached = self.dns_cache.get(request.uri.host);
+        let maybe_cached = self.dns_cache.get(&hash(request.uri.host));
         let state = match maybe_cached {
 
             Some(cached_addr) if !cached_addr.is_outdated() => {
@@ -295,7 +295,7 @@ impl Client {
                                     let state = replace(&mut request.state, InternalReqState::Unspecified);
                                     if let InternalReqState::Resolving { body, host, mode, .. } = state {
 
-                                        self.dns_cache.insert(host, CachedAddr {
+                                        self.dns_cache.insert(hash(host), CachedAddr {
                                             ip_addr: addr,
                                             time_created: Instant::now(),
                                             ttl,
@@ -367,14 +367,13 @@ impl Client {
 
                                     if let InternalReqState::RecvHead { connection, buffer } = &mut request.state {
 
-                                        let mut data = Vec::new(); // todo: reuse vec
-                                        let mut bytes_read = 0;
+                                        let mut bytes_read = buffer.len();
                                         let mut closed = false; 
 
                                         loop {
 
-                                            data.resize(bytes_read + 2048, 0u8);
-                                            bytes_read += match connection.read(&mut data[bytes_read..]) {
+                                            buffer.resize(bytes_read + 2048, 0u8);
+                                            bytes_read += match connection.read(&mut buffer[bytes_read..]) {
                                                 Ok(0) => { closed = true; break },
                                                 Ok(num) => num,
                                                 Err(err) if wouldblock(&err) => break,
@@ -383,8 +382,7 @@ impl Client {
 
                                         }
 
-                                        data.truncate(bytes_read);
-                                        buffer.extend(data);
+                                        buffer.truncate(bytes_read);
 
                                         let mut headers = [httparse::EMPTY_HEADER; 1024]; // todo: make the max header count be controllable by the user
                                         let mut head = httparse::Response::new(&mut headers);
@@ -463,7 +461,7 @@ impl Client {
 
                                 if let InternalReqState::RecvBody { recv, bytes_read_total, content_length } = &mut request.state {
 
-                                    let mut data = Vec::new(); // todo: reuse vec
+                                    let mut data = Vec::new();
                                     let mut bytes_read = 0;
                                     let mut closed = false; 
 
@@ -484,7 +482,6 @@ impl Client {
                                     if bytes_read > 0 {
 
                                         // return the data we just read as a response
-                                        let data = data[..bytes_read].to_vec(); // todo: if we use a fixed size buffer here we might aswell not return a Vec
                                         responses.push(Response {
                                             id: ReqId { inner: request.id },
                                             state: ResponseState::Data(data),
