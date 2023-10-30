@@ -1,5 +1,5 @@
 
-//! This module contains an HTTP [`Client`] that runs ontop of [`mio`].
+//! This module contains an HTTP [`Client`] that runs ontop of `mio`.
 
 use mio::net::TcpStream;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
@@ -367,133 +367,153 @@ impl Client {
 
                                     if let InternalReqState::RecvHead { connection, buffer } = &mut request.state {
 
-                                        'read: loop {
+                                        let mut data = Vec::new(); // todo: reuse vec
+                                        let mut bytes_read = 0;
+                                        let mut closed = false; 
 
-                                            let mut buff = [0; 4096];
-                                            let bytes_read = match connection.read(&mut buff) {
+                                        loop {
+
+                                            data.resize(bytes_read + 2048, 0u8);
+                                            bytes_read += match connection.read(&mut data[bytes_read..]) {
+                                                Ok(0) => { closed = true; break },
                                                 Ok(num) => num,
-                                                Err(err) if wouldblock(&err) => continue 'rq, // todo: move the loop to just the reading part
+                                                Err(err) if wouldblock(&err) => break,
                                                 Err(other) => return Err(other),
                                             };
 
-                                            dbg!(bytes_read);
-                                            buffer.extend_from_slice(&buff[..bytes_read]);
+                                        }
 
-                                            let mut headers = [httparse::EMPTY_HEADER; 1024]; // todo: make the max header count be controllable by the user
-                                            let mut head = httparse::Response::new(&mut headers);
-                                            let status = match head.parse(&buffer) {
-                                                Ok(val) => val,
-                                                Err(_err) => {
-                                                    responses.push(Response::new(request.id, ResponseState::Error)); // todo: rename error to something like "ProtocolError"
-                                                    request.finish_error();
-                                                    continue 'rq;
-                                                }
-                                            };
+                                        data.truncate(bytes_read);
+                                        buffer.extend(data);
 
-                                            if let httparse::Status::Complete(body_start) = status {
+                                        let mut headers = [httparse::EMPTY_HEADER; 1024]; // todo: make the max header count be controllable by the user
+                                        let mut head = httparse::Response::new(&mut headers);
+                                        let status = match head.parse(&buffer) {
+                                            Ok(val) => val,
+                                            Err(_err) => {
+                                                responses.push(Response::new(request.id, ResponseState::Error));
+                                                request.finish_error();
+                                                continue 'rq;
+                                            }
+                                        };
 
-                                                let content_length = head.headers.iter()
-                                                    .find(|header| header.name == "Content-Length")
-                                                    .map(|header| usize::from_str_radix(std::str::from_utf8(header.value)
-                                                        .expect("Content-Length was invalid utf8"), 10)
-                                                        .expect("Content-Length was not a number")) // todo: don't panic here
-                                                    .unwrap_or_default();
+                                        if let httparse::Status::Complete(body_start) = status {
 
-                                                let transfer_chunked = head.headers.iter()
-                                                    .find(|header| header.name == "Transfer-Encoding" && header.value == b"chunked")
-                                                    .is_some();
+                                            let content_length = head.headers.iter()
+                                                .find(|header| header.name == "Content-Length")
+                                                .map(|header| usize::from_str_radix(std::str::from_utf8(header.value)
+                                                    .expect("Content-Length was invalid utf8"), 10)
+                                                    .expect("Content-Length was not a number"))
+                                                .unwrap_or_default();
 
-                                                responses.push(Response {
-                                                    id: ReqId { inner: request.id },
-                                                    state: ResponseState::Head(ResponseHead {
-                                                        status: Status {
-                                                            code: head.code.expect("missing status code"),
-                                                            reason: head.reason.expect("missing reason").to_string(),
-                                                        },
-                                                        content_length,
-                                                        transfer_chunked,
-                                                        headers: head.headers.iter().map(OwnedHeader::from).collect(),
-                                                    })
-                                                });
+                                            let transfer_chunked = head.headers.iter()
+                                                .find(|header| header.name == "Transfer-Encoding" && header.value == b"chunked")
+                                                .is_some();
 
-                                                // todo: make the client manage the User-Agent HTTP header
+                                            responses.push(Response {
+                                                id: ReqId { inner: request.id },
+                                                state: ResponseState::Head(ResponseHead {
+                                                    status: Status {
+                                                        code: head.code.expect("missing status code"),
+                                                        reason: head.reason.expect("missing reason").to_string(),
+                                                    },
+                                                    content_length,
+                                                    transfer_chunked,
+                                                    headers: head.headers.iter().map(OwnedHeader::from).collect(),
+                                                })
+                                            });
 
-                                                // remove the parsed head from the buffer
-                                                buffer.drain(0..body_start);
+                                            // remove the parsed head from the buffer
+                                            buffer.drain(..body_start);
 
-                                                let state = replace(&mut request.state, InternalReqState::Unspecified);
-                                                if let InternalReqState::RecvHead { connection, buffer } = state {
+                                            let state = replace(&mut request.state, InternalReqState::Unspecified);
+                                            if let InternalReqState::RecvHead { connection, buffer } = state {
 
-                                                    // println!("BUFFER:\n{}", String::from_utf8_lossy(&buffer));
-                                                    // todo: maybe use a bufReader at least for the chunked
-                                                        // mode, since the Decoder calls .bytes() sometimes
-                                                    let chain = io::Cursor::new(buffer).chain(connection);
-                                                    let recv = if transfer_chunked {
-                                                        RecvBody::Chunked(chunked_transfer::Decoder::new(chain))
-                                                    } else {
-                                                        RecvBody::Plain(chain)
-                                                    };
-
-                                                    request.state = InternalReqState::RecvBody {
-                                                        recv,
-                                                        bytes_read_total: 0,
-                                                        content_length
-                                                    };
-
-                                                    break 'read
-
+                                                // println!("BUFFER:\n{}", String::from_utf8_lossy(&buffer));
+                                                // todo: maybe use a bufReader at least for the chunked
+                                                    // mode, since the Decoder calls .bytes() sometimes
+                                                let chain = io::Cursor::new(buffer).chain(connection);
+                                                let recv = if transfer_chunked {
+                                                    RecvBody::Chunked(chunked_transfer::Decoder::new(chain))
                                                 } else {
-                                                    unreachable!()
-                                                }
+                                                    RecvBody::Plain(chain)
+                                                };
 
+                                                request.state = InternalReqState::RecvBody {
+                                                    recv,
+                                                    bytes_read_total: 0,
+                                                    content_length
+                                                };
+
+                                                // fall through to RecvBody
+
+                                            } else {
+                                                unreachable!()
                                             }
 
+                                        } else if closed {
+                                            responses.push(Response::new(request.id, ResponseState::Error));
+                                            request.finish_error();
+                                            continue 'rq;
                                         }
+
                                     }
 
                                 }
 
                                 if let InternalReqState::RecvBody { recv, bytes_read_total, content_length } = &mut request.state {
 
+                                    let mut data = Vec::new(); // todo: reuse vec
+                                    let mut bytes_read = 0;
+                                    let mut closed = false; 
+
                                     loop {
 
-                                        let mut buff = [0; 4096];
-                                        let bytes_read = match recv.read(&mut buff) {
+                                        data.resize(bytes_read + 2048, 0u8);
+                                        bytes_read += match recv.read(&mut data[bytes_read..]) {
+                                            Ok(0) => { closed = true; break },
                                             Ok(num) => num,
-                                            Err(err) if wouldblock(&err) => continue 'rq,
+                                            Err(err) if wouldblock(&err) => break,
                                             Err(other) => return Err(other),
                                         };
 
-                                        if bytes_read > 0 {
+                                    }
 
-                                            // return the data we just read as a response
-                                            let data = buff[..bytes_read].to_vec(); // todo: if we use a fixed size buffer here we might aswell not return a Vec
-                                            responses.push(Response {
-                                                id: ReqId { inner: request.id },
-                                                state: ResponseState::Data(data),
-                                            });
+                                    data.truncate(bytes_read);
 
-                                            *bytes_read_total += bytes_read;
+                                    if bytes_read > 0 {
 
-                                        }
+                                        // return the data we just read as a response
+                                        let data = data[..bytes_read].to_vec(); // todo: if we use a fixed size buffer here we might aswell not return a Vec
+                                        responses.push(Response {
+                                            id: ReqId { inner: request.id },
+                                            state: ResponseState::Data(data),
+                                        });
 
-                                        let is_chunked = recv.is_chunked();
-                                        if  is_chunked && (bytes_read == 0) ||
-                                           !is_chunked && (bytes_read_total >= content_length) {
-
-                                            responses.push(Response {
-                                                id: ReqId { inner: request.id },
-                                                state: ResponseState::Done,
-                                            });
-
-                                            request.deregister(&io)?;
-                                            request.finish_done();
-
-                                            continue 'rq
-
-                                        }
+                                        *bytes_read_total += bytes_read;
 
                                     }
+
+                                    let is_chunked = recv.is_chunked();
+                                    if  is_chunked && (closed == true) ||
+                                       !is_chunked && (bytes_read_total >= content_length) {
+
+                                        responses.push(Response {
+                                            id: ReqId { inner: request.id },
+                                            state: ResponseState::Done,
+                                        });
+
+                                        request.deregister(&io)?;
+                                        request.finish_done();
+
+                                        continue 'rq
+
+                                    } else if closed {
+                                        responses.push(Response::new(request.id, ResponseState::Error));
+                                        request.finish_error();
+                                        continue 'rq;
+                                    }
+
                                 }
 
                             }

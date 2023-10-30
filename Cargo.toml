@@ -10,6 +10,9 @@ repository = "https://github.com/Foxcirc/rtv"
 readme = "readme.md"
 license = "MIT"
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lib]
 doctest = false
 

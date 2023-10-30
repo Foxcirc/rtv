@@ -1,7 +1,7 @@
 
 # Rtv
 
-Rtv is a simple, minimal dependency, HTTP client that runs ontop of `mio` only.
+Rtv is a simple, minimal dependency, HTTP client that runs ontop of [mio](https://crates.io/crates/mio) only.
 It supports fully nonblocking requests, even dns resolution is nonblocking.
 
 You can either setup `mio` youself and then use a `Client` to make requests using your `Poll`
