@@ -2,8 +2,10 @@
 
 use mio::net::TcpStream;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
-#[cfg(feature = "tls")] use std::sync::Arc;
-use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, is_elapsed}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader};
+use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader};
+
+#[cfg(feature = "tls")]
+use std::sync::Arc;
 
 /// A flexible HTTP client.
 ///
@@ -147,7 +149,7 @@ impl Client {
         let maybe_cached = self.dns_cache.get(&request.uri.host);
         let state = match maybe_cached {
 
-            Some(cached_addr) if !is_elapsed(cached_addr.time_created, Some(cached_addr.ttl)) => {
+            Some(cached_addr) if !cached_addr.is_outdated() => {
 
                 let mut connection = Connection::new(cached_addr.ip_addr, mode)?;
                 register_all(io, &mut connection, token)?;
@@ -224,7 +226,7 @@ impl Client {
         'rq: for request in self.requests.iter_mut() {
 
             // finish timed out requests
-            if is_elapsed(request.time_created, request.timeout) {
+            if request.timeout.unwrap_or(Duration::MAX) <= request.time_created.elapsed() {
 
                 responses.push(Response::new(request.id, ResponseState::TimedOut));
                 request.deregister(&io)?; // todo: make io errors not "hard errors" but make them
@@ -641,9 +643,15 @@ impl io::Read for RecvBody {
 }
 
 struct CachedAddr {
-    pub(crate) ip_addr: Ipv4Addr,
-    pub(crate) time_created: Instant,
-    pub(crate) ttl: Duration,
+    pub ip_addr: Ipv4Addr,
+    pub time_created: Instant,
+    pub ttl: Duration,
+}
+
+impl CachedAddr {
+    pub fn is_outdated(&self) -> bool {
+        self.ttl <= self.time_created.elapsed()
+    }
 }
 
 enum InternalMode {
@@ -777,25 +785,5 @@ impl Write for Connection {
         }
     }
 
-}
-
-pub(crate) struct ChunkedDecoder<R> {
-    inner: R,
-    chunk_length: Option<usize>,
-}
-
-impl<R> ChunkedDecoder<R> {
-    pub fn new(inner: R) -> Self {
-        Self { inner, chunk_length: None }
-    }
-    fn read_chunk_length(&mut self) -> usize {
-        0
-    }
-}
-
-impl<R: Read> Read for ChunkedDecoder<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        todo!()
-    }
 }
 

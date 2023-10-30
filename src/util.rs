@@ -1,14 +1,6 @@
 
 use mio::{event::Source, Interest};
-use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, io, time::{Instant, Duration}};
-
-pub fn is_elapsed(from: Instant, maybe_duration: Option<Duration>) -> bool { // todo: don't take Option<Duration>
-    if let Some(duration) = maybe_duration {
-        duration < Instant::now() - from
-    } else {
-        false
-    }
-}
+use std::{net::{Ipv4Addr, SocketAddr, SocketAddrV4}, io};
 
 pub fn wouldblock(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::WouldBlock

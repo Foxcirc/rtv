@@ -1,7 +1,7 @@
 
 use mio::net::UdpSocket;
 use std::{io, net::{SocketAddr, Ipv4Addr}, fmt, time::{self, Duration, Instant}};
-use crate::util::{make_socket_addr, register_all, wouldblock, reregister_all, is_elapsed};
+use crate::util::{make_socket_addr, register_all, wouldblock, reregister_all};
 
 const ME:  SocketAddr = make_socket_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
 const DNS: SocketAddr = make_socket_addr(Ipv4Addr::new(8, 8, 8, 8), 53); // google dns server
@@ -66,7 +66,8 @@ impl DnsClient {
         let mut index: isize = 0;
         while let Some(request) = self.requests.get_mut(index as usize) {
 
-            if is_elapsed(request.time_created, request.timeout) {
+            // finish timed out requests
+            if request.timeout.unwrap_or(Duration::MAX) <= request.time_created.elapsed() {
 
                 let id = request.id;
 
