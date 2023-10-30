@@ -34,16 +34,23 @@ pub enum Mode {
 /// An HTTP URI.
 /// The path may start with a `/` or it may not.
 #[derive(Clone, Default)]
-pub struct Uri {
-    pub host: String,
-    pub path: String,
+pub struct Uri<'a> {
+    pub host: &'a str,
+    pub path: &'a str,
+}
+
+/// An HTTP query.
+#[derive(Clone)]
+pub struct Query<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
 }
 
 /// An HTTP header.
 #[derive(Clone)]
-pub struct Header {
-    pub name: String,
-    pub value: String,
+pub struct Header<'a> {
+    pub name: &'a str,
+    pub value: &'a str,
 }
 
 /// The ID assigned to a request.
@@ -60,12 +67,12 @@ pub struct ReqId {
 /// Used to build a request.
 /// See [`Request::build`].
 #[derive(Default, Clone)]
-pub struct RequestBuilder {
-    request: Request, // only partially populated
-    queries: Vec<(String, String)>,
+pub struct RequestBuilder<'a> {
+    request: Request<'a>, // only partially populated
+    queries: String,
 }
 
-impl RequestBuilder {
+impl<'a> RequestBuilder<'a> {
 
     /// Sets the `timeout`.
     /// By default requests do not have a timeout.
@@ -104,15 +111,15 @@ impl RequestBuilder {
 
     /// Set the uri.host component of this request.
     #[inline(always)]
-    pub fn host(mut self, host: impl Into<String>) -> Self {
-        self.request.uri.host = host.into();
+    pub fn host(mut self, host: &'a str) -> Self {
+        self.request.uri.host = host;
         self
     }
 
     /// Set the uri.path component of this request.
     #[inline(always)]
-    pub fn path(mut self, path: impl Into<String>) -> Self {
-        self.request.uri.path = path.into();
+    pub fn path(mut self, path: &'a str) -> Self {
+        self.request.uri.path = path;
         self
     }
 
@@ -124,8 +131,8 @@ impl RequestBuilder {
     /// using following code:
     /// `Request::build().host("example.com").query("foo", "1").query("bar", "2")`
     #[inline(always)]
-    pub fn query(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.queries.push((name.into(), value.into()));
+    pub fn query(mut self, name: &'a str, value: &'a str) -> Self {
+        self.request.queries.push(Query { name, value });
         self
     }
 
@@ -134,59 +141,48 @@ impl RequestBuilder {
     /// For information on which headers are managed by rtv, see the [`Request`] documentation.
     #[track_caller]
     #[inline(always)]
-    pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        let name_string = name.into();
-        if matches!(&name_string[..], "Connection" | "Accept-Encoding" | "Content-Length") {
-            panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name_string);
+    pub fn set(mut self, name: &'a str, value: &'a str) -> Self {
+        if matches!(name, "Connection" | "Accept-Encoding" | "Content-Length") {
+            panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name);
         }
-        self.request.headers.push(Header { name: name_string, value: value.into() });
+        self.request.headers.push(Header { name, value });
         self
     }
 
     /// Alias to [`set`](RequestBuilder::set).
     #[inline(always)]
-    pub fn header(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn header(self, name: &'a str, value: &'a str) -> Self {
         self.set(name, value)
     }
 
-    /// Update the request body with the specified data.
+    /// Insert the `User-Agent` header with the specified value.
     #[inline(always)]
-    pub fn send_bytes(mut self, body: impl Into<Vec<u8>>) -> Self {
-        self.request.body = body.into();
-        self
+    pub fn user_agent(self, value: &'a str) -> Self {
+        self.set("User-Agent", value)
     }
 
-    /// Like [`send_bytes`](RequestBuilder::send_bytes).
-    /// Convenience function to convert the string to bytes for you.
+
+    /// Update the request body with the specified data.
     #[inline(always)]
-    pub fn send_str(mut self, body: impl Into<String>) -> Self {
-        self.request.body = body.into().into_bytes();
+    pub fn send(mut self, body: impl AsRef<&'a [u8]>) -> Self {
+        self.request.body = body.as_ref();
         self
     }
 
     /// Get the request.
-    /// You don't have to use this, since all functions that send a request can also
+    /// You don't have to use this, since all functions that send a `Request` can also
     /// take a `RequestBuilder` directly.
     #[inline(always)]
-    pub fn finish(self) -> Request {
-        let mut request = self.request;
-        let mut param_str = String::new();
-        for (idx, (name, value)) in self.queries.into_iter().enumerate() {
-            param_str += if idx == 0 { "?" } else { "&" };
-            param_str += &name;
-            param_str += "=";
-            param_str += &value;
-        }
-        request.uri.path += &param_str;
-        request
+    pub fn finish(self) -> Request<'a> {
+        self.request
     }
 
 }
 
 /// This just calls [`finish`](RequestBuilder::finish).
-impl From<RequestBuilder> for Request {
+impl<'a> From<RequestBuilder<'a>> for Request<'a> {
     #[inline(always)]
-    fn from(builder: RequestBuilder) -> Self {
+    fn from(builder: RequestBuilder<'a>) -> Self {
         builder.finish()
     }
 }
@@ -219,16 +215,17 @@ impl From<RequestBuilder> for Request {
 /// ```
 ///
 #[derive(Clone, Default)]
-pub struct Request {
+pub struct Request<'a> {
     pub timeout: Option<Duration>,
     pub method: Method,
     pub mode: Mode,
-    pub uri: Uri,
-    pub headers: Vec<Header>,
-    pub body: Vec<u8>,
+    pub uri: Uri<'a>,
+    pub queries: Vec<Query<'a>>,
+    pub headers: Vec<Header<'a>>,
+    pub body: &'a [u8],
 }
 
-impl Request {
+impl<'a> Request<'a> {
 
     /// Build a request. For [`Method::Get`] and [`Method::Post`] there are two
     /// convencience functions.
@@ -238,27 +235,24 @@ impl Request {
     /// let req = Request::build().method(Method::Delete).host("example.com");
     /// ```
     /// Oh no we just deleted the exam-
-    pub fn build() -> RequestBuilder {
+    pub fn build() -> RequestBuilder<'a> {
         RequestBuilder::default()
     }
 
     /// Build a request with the `GET` method.
     /// 
     /// Other methods are available through [`Method`].
-    pub fn get() -> RequestBuilder {
+    pub fn get() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Get)
     }
 
     /// Build a request with the `POST` method.
     ///
     /// Other methods are available through [`Method`].
-    pub fn post() -> RequestBuilder {
+    pub fn post() -> RequestBuilder<'a> {
         RequestBuilder::default().method(Method::Post)
     }
 
-    /// Format the request into valid HTTP plaintext.
-    ///
-    /// This is for internal use but exposed because it might be useful.
     pub fn format(&self) -> Vec<u8> {
 
         let method = match self.method {
@@ -272,8 +266,16 @@ impl Request {
             Method::Trace   => "TRACE",
         };
 
-        let path = &self.uri.path;
-        let host = &self.uri.host;
+        let host = self.uri.host;
+        let trimmed_path = self.uri.path.trim_start_matches("/");
+
+        let mut path_builder = trimmed_path.to_string();
+        for (idx, Query { name, value }) in self.queries.iter().enumerate() {
+            path_builder += if idx == 0 { "?" } else { "&" };
+            path_builder += name;
+            path_builder += "=";
+            path_builder += value;
+        }
 
         let mut headers = String::new();
         for Header { name, value } in self.headers.iter() {
@@ -293,12 +295,10 @@ impl Request {
         headers += "Accept-Encoding: identity";
         headers += "\r\n";
 
-        let trimmed_path = path.trim_start_matches('/');
-
         let head = format!("{} /{} HTTP/1.1\r\nHost: {}\r\n{}\r\n", method, trimmed_path, host, headers);
         let mut bytes = head.into_bytes();
 
-        bytes.extend_from_slice(&self.body);
+        bytes.extend_from_slice(self.body);
 
         bytes
 

@@ -47,7 +47,7 @@ fn http_request() {
         .secure()
         .timeout(Duration::from_secs(5))
         .host("www.google.com")
-        .set("User-Agent", "rtv (see crates.io page for more details)");
+        .user_agent("foxcirc's rtv");
 
     let _id = client.send(&io, mio::Token(1), req).unwrap();
 

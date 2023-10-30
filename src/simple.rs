@@ -45,7 +45,7 @@ impl SimpleClient {
     ///
     /// This method will send a single request and block until the
     /// response arrives.
-    pub fn send(&mut self, input: impl Into<Request>) -> RequestResult<SimpleResponse<Vec<u8>>> {
+    pub fn send<'a>(&mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<Vec<u8>>> {
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -93,7 +93,7 @@ impl SimpleClient {
     /// the [`Read`](std::io::Read) trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
-    pub fn stream<'d>(&'d mut self, input: impl Into<Request>) -> RequestResult<SimpleResponse<BodyReader<'d>>> {
+    pub fn stream<'a, 'd>(&'d mut self, input: impl Into<Request<'a>>) -> RequestResult<SimpleResponse<BodyReader<'d>>> {
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
@@ -167,9 +167,10 @@ impl SimpleClient {
     /// resps[1]? // belongs to wikipedia.org
     /// assert!(resps.len() == reqs.len());
     /// ```
-    pub fn many(&mut self, input: Vec<impl Into<Request>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
+    pub fn many<'a>(&mut self, input: Vec<impl Into<Request<'a>>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
 
         // todo: this code kinda dirty
+        // todo: also enable taking a [Request; N]
         let num_requests = input.len();
 
         let mut response_builders = vec![Some(ResponseBuilder { head: None, body: Vec::with_capacity(128) }); num_requests];

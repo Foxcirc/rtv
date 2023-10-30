@@ -135,7 +135,7 @@ impl Client {
     /// client.send(&io, mio::Token(1), request)?; // io is the mio::Poll
     /// ```
     ///
-    pub fn send(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request>) -> io::Result<ReqId> {
+    pub fn send<'a>(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request<'a>>) -> io::Result<ReqId> {
 
         let request = input.into();
 
@@ -144,9 +144,9 @@ impl Client {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
-        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host.clone());
+        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
 
-        let maybe_cached = self.dns_cache.get(&request.uri.host);
+        let maybe_cached = self.dns_cache.get(request.uri.host);
         let state = match maybe_cached {
 
             Some(cached_addr) if !cached_addr.is_outdated() => {
@@ -162,11 +162,11 @@ impl Client {
 
             _not_cached_or_old => {
 
-                let dns_id = self.dns.resolve(io, request.uri.host.clone(), request.timeout)?;
+                let dns_id = self.dns.resolve(io, request.uri.host, request.timeout)?;
                 InternalReqState::Resolving {
                     body: request_bytes,
                     dns_id,
-                    host: request.uri.host, // todo: zero-alloc: hash the host and store the hash
+                    host: request.uri.host.to_string(), // todo: zero-alloc: hash the host and store the hash
                     mode
                 }
 
@@ -663,12 +663,12 @@ enum InternalMode {
 impl InternalMode {
 
     #[cfg(feature = "tls")]
-    pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: String) -> Self {
+    pub(crate) fn from_mode(mode: Mode, tls_config: &Arc<rustls::ClientConfig>, host: &str) -> Self {
         match mode {
             Mode::Plain => Self::Plain,
             Mode::Secure => Self::Secure {
                 tls_config: Arc::clone(tls_config),
-                server_name: host.as_str().try_into().expect("Invalid host name.")
+                server_name: host.try_into().expect("invalid host name")
             },
         }
     }
