@@ -1,6 +1,5 @@
 
-use std::{time::Duration, io::Read, fs};
-
+use std::{time::Duration, io::Read};
 use crate::{dns, Client, Request, SimpleClient};
 
 #[test]
