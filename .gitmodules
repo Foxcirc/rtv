@@ -1,0 +1,3 @@
+[submodule "dependencies/chunked-transfer"]
+	path = dependencies/chunked-transfer
+	url = https://github.com/Foxcirc/rust-chunked-transfer/

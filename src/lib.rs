@@ -12,11 +12,6 @@
 //! - A [`SimpleClient`], which makes it simple to send one request, send many requests at the same time
 //!   or stream a request.
 //!
-//! Note that I wrote this client myself and it is really basic
-//! and doesn't handle errors very well right now.
-//! The whole thing probably falls apart for websites wich use more then
-//! basic HTTP 1.1 features.
-//!
 //! ### Supported features:
 //! - Plain HTTP requests
 //! - Secure HTTPS requests
@@ -24,9 +19,12 @@
 //! - Nonblocking DNS lookup & HTTP requests
 //! - Timeouts
 //! 
-//! ### Currently not implemented features:
+//! ### Currently **not** implemented:
 //! - Connection keep alive
-//! - maybe more...
+//! - Compression (gzip etc.)
+//! - Different text encodings
+//! - Url percent encoding
+//! - Maybe more...
 //!
 //! # Features
 //!

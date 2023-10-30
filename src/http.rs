@@ -31,7 +31,7 @@ pub enum Mode {
     Secure,
 }
 
-/// An HTTP uri.
+/// An HTTP URI.
 /// The path may start with a `/` or it may not.
 #[derive(Clone, Default)]
 pub struct Uri {
@@ -48,9 +48,11 @@ pub struct Header {
 
 /// The ID assigned to a request.
 ///
-/// This should be treated as an opaque container.
 /// You can use it to check if a response belongs to a request.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// The inner number will count up by `1` (wrapping) for every request sent
+/// by a perticular client. You can rely on this behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReqId {
     pub inner: usize,
 }
@@ -59,41 +61,56 @@ pub struct ReqId {
 /// See [`Request::build`].
 #[derive(Default, Clone)]
 pub struct RequestBuilder {
-    request: Request, // partially populated
+    request: Request, // only partially populated
     queries: Vec<(String, String)>,
 }
 
 impl RequestBuilder {
 
-    pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.request.timeout = timeout;
+    /// Sets the `timeout`.
+    /// By default requests do not have a timeout.
+    #[inline(always)]
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.request.timeout = Some(timeout);
         self
     }
 
+    #[inline(always)]
     pub fn method(mut self, method: Method) -> Self {
         self.request.method = method;
         self
     }
 
+    #[inline(always)]
     pub fn mode(mut self, mode: Mode) -> Self {
         self.request.mode = mode;
         self
     }
 
-    /// Sets `mode` to [`Mode::Secure`]
+    /// Sets the `mode` to [`Mode::Secure`].
     #[cfg(feature = "tls")]
+    #[inline(always)]
     pub fn secure(mut self) -> Self {
         self.request.mode = Mode::Secure;
         self
     }
 
+    /// Alias to [`secure`](RequestBuilder::secure).
+    #[cfg(feature = "tls")]
+    #[inline(always)]
+    pub fn https(self) -> Self {
+        self.secure()
+    }
+
     /// Set the uri.host component of this request.
+    #[inline(always)]
     pub fn host(mut self, host: impl Into<String>) -> Self {
         self.request.uri.host = host.into();
         self
     }
 
     /// Set the uri.path component of this request.
+    #[inline(always)]
     pub fn path(mut self, path: impl Into<String>) -> Self {
         self.request.uri.path = path.into();
         self
@@ -103,14 +120,20 @@ impl RequestBuilder {
     ///
     /// # Example
     ///
-    /// The uri `example.com?foo=1&bar=2` could be constructedusing
-    /// using `Request::build().host("example.com).`
+    /// The uri `example.com?foo=1&bar=2` could be constructed
+    /// using following code:
+    /// `Request::build().host("example.com").query("foo", "1").query("bar", "2")`
+    #[inline(always)]
     pub fn query(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.queries.push((name.into(), value.into()));
         self
     }
 
     /// Insert a header into this request.
+    ///
+    /// For information on which headers are managed by rtv, see the [`Request`] documentation.
+    #[track_caller]
+    #[inline(always)]
     pub fn set(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         let name_string = name.into();
         if matches!(&name_string[..], "Connection" | "Accept-Encoding" | "Content-Length") {
@@ -120,7 +143,14 @@ impl RequestBuilder {
         self
     }
 
+    /// Alias to [`set`](RequestBuilder::set).
+    #[inline(always)]
+    pub fn header(self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.set(name, value)
+    }
+
     /// Update the request body with the specified data.
+    #[inline(always)]
     pub fn send_bytes(mut self, body: impl Into<Vec<u8>>) -> Self {
         self.request.body = body.into();
         self
@@ -128,14 +158,16 @@ impl RequestBuilder {
 
     /// Like [`send_bytes`](RequestBuilder::send_bytes).
     /// Convenience function to convert the string to bytes for you.
+    #[inline(always)]
     pub fn send_str(mut self, body: impl Into<String>) -> Self {
         self.request.body = body.into().into_bytes();
         self
     }
 
     /// Get the request.
-    /// You don't *have* to use this, since all functions that send a request can also
+    /// You don't have to use this, since all functions that send a request can also
     /// take a `RequestBuilder` directly.
+    #[inline(always)]
     pub fn finish(self) -> Request {
         let mut request = self.request;
         let mut param_str = String::new();
@@ -153,6 +185,7 @@ impl RequestBuilder {
 
 /// This just calls [`finish`](RequestBuilder::finish).
 impl From<RequestBuilder> for Request {
+    #[inline(always)]
     fn from(builder: RequestBuilder) -> Self {
         builder.finish()
     }
@@ -162,17 +195,17 @@ impl From<RequestBuilder> for Request {
 /// You can build a request either through this struct directly
 /// or through a [`RequestBuilder`].
 ///
-/// Three headers will be set automatically:
+/// Three headers are managed by rtv and will be set automatically:
 /// - `Connection: close`
 /// - `Accept-Encoding: identity`
-/// - `Content-Length: body.len()`
+/// - `Content-Length: ...`
 ///
 /// # Example
 ///
 /// Create a request using a builder.
 ///
 /// ```rust
-/// let req = Request::get().host("example.com").secure();
+/// let req = Request::get().secure().host("example.com");
 /// ```
 ///
 /// Create a request directly.
@@ -280,22 +313,29 @@ pub struct OwnedHeader {
     pub value: String,
 }
 
+impl From<&httparse::Header<'_>> for OwnedHeader {
+    fn from(header: &httparse::Header) -> Self {
+        Self { name: header.name.to_string(), value: String::from_utf8_lossy(header.value).to_string() }
+    }
+}
+
 /// A status code and message for a response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub code: u16,
-    pub text: String,
+    pub reason: String,
 }
 
 /// The `Head` of a response. This is not to be confused with an HTTP `Header`.
 ///
 /// The response head contains informations about the response.
-/// It contains the status, the headers and the content_length.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ResponseHead {
     pub status: Status,
     pub headers: Vec<OwnedHeader>,
+    // `0` if not present
     pub content_length: usize,
+    // `true` if chunked transfer encoding is used
     pub transfer_chunked: bool,
 }
 
@@ -303,58 +343,34 @@ impl ResponseHead {
 
     /// Get the value of a header. Returns `None` if the header could not be found.
     pub fn get_header<'d>(&'d self, name: &str) -> Option<&'d str> {
-        self.headers.iter().find_map(move |header| if header.name == name { Some(&header.value[..]) } else { None } )
+        self.headers.iter().find_map(Self::match_header(name))
     }
 
     /// Get an Iterator over all the headers.
     pub fn all_headers<'d>(&'d self, name: &'d str) -> impl Iterator<Item = &'d str> {
-        self.headers.iter().filter_map(move |header| if header.name == name { Some(&header.value[..]) } else { None })
+        self.headers.iter().filter_map(Self::match_header(name))
     }
 
-    pub(crate) fn parse(bytes: &[u8]) -> Option<(Self, usize)> {
+    fn match_header<'d>(name: &'d str) -> impl for<'e> Fn(&'e OwnedHeader) -> Option<&'e str> + 'd {
+        move |header| if header.name == name { Some(&header.value[..]) } else { None }
+    }
 
-        let head_end = bytes.windows(4).position(|bytes| bytes == &[0x0D, 0x0A, 0x0D, 0x0A] /* double CRLF */)?;
+}
 
-        let head_raw = &bytes[..head_end];
-        let head = String::from_utf8(head_raw.to_vec()).ok()?;
-        let mut lines = head.lines();
-        
-        let mut info = lines.next()?.splitn(3, ' ');
-        let _http_version = info.next()?;
-        let status_code = info.next()?.parse::<u16>().ok()?;
-        let status_text = info.next()?;
-
-        let mut content_length = 0;
-        let mut transfer_chunked = false;
-
-        let mut headers = Vec::with_capacity(8);
-        for line in lines {
-
-            let (name, value) = line.split_once(':')?;
-            let name = name.trim();
-            let value = value.trim();
-
-            if name == "Content-Length" { content_length = value.parse().ok()? }
-            if name == "Transfer-Encoding" && value == "chunked" { transfer_chunked = true }
-
-            headers.push(OwnedHeader { name: name.to_string(), value: value.to_string() })
-
+impl fmt::Debug for ResponseHead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "ResponseHead {{")?;
+        writeln!(f, "    headers: [")?;
+        for header in self.headers.iter() {
+            writeln!(f, "        {}: {}", header.name, header.value)?;
         }
-
-        let status = Status {
-            code: status_code,
-            text: status_text.to_string(),
-        };
-        
-        Some((Self {
-            status,
-            headers,
-            content_length,
-            transfer_chunked,
-        }, head_end + 4 /* skip the seperator */))
-
+        writeln!(f, "    ]")?;
+        writeln!(f, "    status: {:?}", self.status)?;
+        writeln!(f, "    content_length: {:?}", self.content_length)?;
+        writeln!(f, "    transfer_chunked: {:?}", self.transfer_chunked)?;
+        write!(f, "}}")?;
+        Ok(())
     }
-
 }
 
 /// An HTTP response.
@@ -408,21 +424,45 @@ pub enum ResponseState {
     /// The host could not be found.
     UnknownHost,
     /// An error occured while reading the response. For example the server could've send invalid data.
+    // todo: update these docs ^^
     Error,
 }
 
 impl ResponseState {
 
+    /// Returns `true` if this state signals that the request is finished.
+    ///
+    /// This is literally implemented as:
+    /// ```
+    /// self.is_completed() || self.is_error()
+    /// ```
+    pub fn is_finished(&self) -> bool {
+        self.is_done() || self.is_error()
+    }
+
+    /// Returns `true` if this state is `Done`.
+    pub fn is_done(&self) -> bool {
+        match self {
+            Self::Head(..)    => false,
+            Self::Data(..)    => false,
+            Self::Done        => true,
+            Self::TimedOut    => false,
+            Self::Dead        => false,
+            Self::UnknownHost => false,
+            Self::Error       => false,
+        }
+    }
+
     /// Returns `true` if this state is either `Dead`, `TimedOut`, `UnknownHost` or `Error`.
     pub fn is_error(&self) -> bool {
         match self {
-            Self::Head(..) => false,
-            Self::Data(..) => false,
-            Self::Done => false,
-            Self::TimedOut => true,
-            Self::Dead => true,
+            Self::Head(..)    => false,
+            Self::Data(..)    => false,
+            Self::Done        => false,
+            Self::TimedOut    => true,
+            Self::Dead        => true,
             Self::UnknownHost => true,
-            Self::Error => true,
+            Self::Error       => true,
         }
     }
 

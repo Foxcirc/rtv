@@ -1,5 +1,5 @@
 
-use std::{time::Duration, io::Read};
+use std::{time::Duration, io::Read, fs};
 
 use crate::{dns, Client, Request, SimpleClient};
 
@@ -41,28 +41,31 @@ fn http_request() {
 
     let mut client = Client::new(mio::Token(0));
 
-    // let req = Request::get()
-    //     .uri("google.com", "")
-    //     .send_str("Hello world!");
+    // todo: make the request not allocate but take references since these are turned into a Vec<u8> anyways
 
-    let req = Request {
-        timeout: None,
-        method: crate::Method::Get,
-        mode: crate::Mode::Plain,
-        uri: crate::Uri { host: "google.com".into(), path: "".into() },
-        headers: Vec::new(),
-        body: "".into(),
-    };
+    let req = Request::get()
+        .secure()
+        .timeout(Duration::from_secs(5))
+        .host("www.google.com")
+        .set("User-Agent", "rtv (see crates.io page for more details)");
 
     let _id = client.send(&io, mio::Token(1), req).unwrap();
 
     'ev: loop {
 
-        io.poll(&mut events, Some(Duration::from_secs(5))).unwrap();
+        eprintln!("[polling]");
+        io.poll(&mut events, client.timeout()).unwrap();
+        eprintln!("[got {} events]", events.iter().count());
 
         for resp in client.pump(&io, &events).unwrap() {
-            println!("{:?}", resp.state);
-            if resp.state == crate::ResponseState::Done {
+            if let crate::ResponseState::Data(_data) = &resp.state {
+                eprintln!("[got some data]");
+                // eprintln!("[got some data, writing it to stdout]");
+                // std::io::Write::write_all(&mut std::io::stdout(), _data).unwrap();
+            } else {
+                eprintln!("[got response state: {:?}]", resp.state);
+            }
+            if resp.state.is_finished() {
                 break 'ev
             }
         };
@@ -92,11 +95,16 @@ fn chunked_request() {
 
     let resp = client.send(Request::get().host("www.google.com")).unwrap();
 
-    let te = resp.head.get_header("Transfer-Encoding").unwrap();
-
     println!("Got a response!");
-    println!("Transfer-Encoding: {}", te);
-    assert!(te == "chunked");
+
+    let transfer_encoding = resp.head.get_header("Transfer-Encoding").unwrap();
+    println!("Transfer-Encoding: {}", transfer_encoding);
+    assert!(transfer_encoding == "chunked");
+
+    println!("Head:");
+    println!("{:?}", resp.head);
+
+    // println!("{}", String::from_utf8_lossy(&resp.body));
 
 }
 
@@ -112,7 +120,7 @@ fn many_request() {
     let mut reqs = vec![req; NUM_REQUESTS];
     reqs.push(other_req);
 
-    let resps = client.many(reqs).unwrap();
+    let resps = client.many(reqs).unwrap(); // todo: make SimpleClient::many support slices and not only Vec
 
     println!("Total requests: {}", NUM_REQUESTS + 1);
     println!("Total responses: {}", resps.len());

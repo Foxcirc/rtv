@@ -14,13 +14,16 @@ license = "MIT"
 doctest = false
 
 [features]
-default = ["tls", "json"]
+default = ["tls"]
 tls = ["rustls", "webpki-roots"]
 json = ["serde_json"]
 
 [dependencies]
-dns-parser = "0.8.0"
-mio = { version = "0.8.*", features = ["net", "os-poll"] }
-rustls = { version = "0.21.*", optional = true }
+dns-parser   = { version = "0.8.0" }
+mio          = { version = "0.8.*", features = ["net", "os-poll"] }
+rustls       = { version = "0.21.*", optional = true }
 webpki-roots = { version = "0.23.*", optional = true }
-serde_json = { version = "1.0.*", optional = true }
+serde_json   = { version = "1.0.*", optional = true }
+# chunked_transfer = "1.4.1"
+chunked_transfer = { path = "dependencies/chunked-transfer" }
+httparse = "1.8.0"

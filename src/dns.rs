@@ -4,7 +4,10 @@ use std::{io, net::{SocketAddr, Ipv4Addr}, fmt, time::{self, Duration, Instant}}
 use crate::util::{make_socket_addr, register_all, wouldblock, reregister_all, is_elapsed};
 
 const ME:  SocketAddr = make_socket_addr(Ipv4Addr::new(0, 0, 0, 0), 0);
-const DNS: SocketAddr = make_socket_addr(Ipv4Addr::new(8, 8, 8, 8), 53);
+const DNS: SocketAddr = make_socket_addr(Ipv4Addr::new(8, 8, 8, 8), 53); // google dns server
+// todo: make custom dns server possible
+// todo: clean this up and loom over the code again
+// todo: remove the dependency on "dns_parser"
 
 pub(crate) struct DnsClient {
     pub(crate) token: mio::Token,

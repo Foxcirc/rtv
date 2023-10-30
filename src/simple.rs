@@ -80,7 +80,7 @@ impl SimpleClient {
 
         }
 
-        let head = response_head.expect("No head?");
+        let head = response_head.expect("no response head");
         Ok(SimpleResponse{ head, body: result })
 
     }
@@ -167,20 +167,15 @@ impl SimpleClient {
     /// resps[1]? // belongs to wikipedia.org
     /// assert!(resps.len() == reqs.len());
     /// ```
-    /// 
-    /// Note:
-    /// This method takes `Vec` because in an actual use case you would
-    /// pass a `Vec` into this most of the time. Const arrays are really only practical
-    /// for nice looking examples.
     pub fn many(&mut self, input: Vec<impl Into<Request>>) -> RequestResult<Vec<RequestResult<SimpleResponse<Vec<u8>>>>> {
 
+        // todo: this code kinda dirty
         let num_requests = input.len();
 
         let mut response_builders = vec![Some(ResponseBuilder { head: None, body: Vec::with_capacity(128) }); num_requests];
         let mut responses = Vec::with_capacity(num_requests);
         for _ in 0..num_requests { responses.push(Err(RequestError::Dead)) }
 
-        let mut smallest_timeout: Option<Duration> = None;
         for input_item in input.into_iter() {
 
             let id = self.next_id;
@@ -188,20 +183,16 @@ impl SimpleClient {
 
             let request: Request = input_item.into();
 
-            if request.timeout.unwrap_or(Duration::MAX) < smallest_timeout.unwrap_or(Duration::MAX) {
-                smallest_timeout = request.timeout;
-            }
-
             self.client.send(&self.io, mio::Token(id), request)?;
 
         }
 
-        let mut events = mio::Events::with_capacity(2 + num_requests);
+        let mut events = mio::Events::with_capacity(num_requests * 2);
         let mut counter = 0;
 
         'ev: loop {
 
-            self.io.poll(&mut events, smallest_timeout)?;
+            self.io.poll(&mut events, self.client.timeout())?;
 
             for response in self.client.pump(&self.io, &events)? {
                 
@@ -282,8 +273,8 @@ impl<'b> io::Read for BodyReader<'b> {
                         ResponseState::Done => { self.is_done = true; stop = true },
                         ResponseState::Dead => return Err(io::Error::new(io::ErrorKind::ConnectionAborted, RequestError::Dead)),
                         ResponseState::TimedOut => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::TimedOut)),
-                        ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::UnknownHost)),
-                        ResponseState::Error => return Err(io::Error::new(io::ErrorKind::TimedOut, RequestError::Error)),
+                        ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::Other, RequestError::UnknownHost)),
+                        ResponseState::Error => return Err(io::Error::new(io::ErrorKind::Other, RequestError::Error)),
                         ResponseState::Head(..) => unreachable!(),
                     }
 
@@ -323,17 +314,17 @@ impl SimpleResponse<Vec<u8>> {
     /// Convert the request body into a `String`.
     /// Note that the data is assumed to be valid utf8. Text encodings
     /// are not handeled by this crate.
-    pub fn into_string(self) -> Result<String, string::FromUtf8Error> {
+    pub fn to_string(self) -> Result<String, string::FromUtf8Error> {
         String::from_utf8(self.body)
     }
 
-    pub fn into_string_lossy<'d>(&'d self) -> Cow<'d, str> {
+    pub fn to_string_lossy<'d>(&'d self) -> Cow<'d, str> {
         String::from_utf8_lossy(&self.body)
     }
 
     /// Convert the request body into a serde json [`Value`](serde_json::Value).
     #[cfg(feature = "json")]
-    pub fn into_json(self) -> serde_json::Result<serde_json::Value> {
+    pub fn to_json(self) -> serde_json::Result<serde_json::Value> {
         serde_json::from_slice(&self.body)
     }
 
@@ -341,7 +332,7 @@ impl SimpleResponse<Vec<u8>> {
 
 impl<B> fmt::Debug for SimpleResponse<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SimpleResponse {{ ... }}")
+        write!(f, "SimpleResponse {{ ... }}") // todo: print information about the head
     }
 }
 
@@ -351,7 +342,7 @@ pub type RequestResult<T> = Result<T, RequestError>;
 #[derive(Debug)]
 pub enum RequestError {
     /// An IO error occured, such as a connection loss.
-    Io(io::Error),
+    IO(io::Error),
     /// The server unexpectedly closed the connection.
     Dead,
     /// The request timed out. Can only occur if you set a timeout for a request.
@@ -365,7 +356,7 @@ pub enum RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(err) => write!(f, "I/O Error: {}", err),
+            Self::IO(err) => write!(f, "I/O Error: {}", err),
             Self::Dead => write!(f, "Dead: The server closed the connection unexpectedly."),
             Self::TimedOut => write!(f, "TimedOut: Request timed out."),
             Self::UnknownHost => write!(f, "UnknownHost: The host's IP address could not be resolved."),
@@ -378,7 +369,7 @@ impl error::Error for RequestError {}
 
 impl From<io::Error> for RequestError {
     fn from(value: io::Error) -> Self {
-        Self::Io(value)
+        Self::IO(value)
     }
 }
 
