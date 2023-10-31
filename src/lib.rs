@@ -24,6 +24,7 @@
 //! - Compression (gzip etc.)
 //! - Different text encodings
 //! - Url percent encoding
+//! - Automatic redirects
 //! - Maybe more...
 //!
 //! # Features

@@ -138,12 +138,8 @@ impl<'a> RequestBuilder<'a> {
     /// Insert a header into this request.
     ///
     /// For information on which headers are managed by rtv, see the [`Request`] documentation.
-    #[track_caller]
     #[inline(always)]
     pub fn set(mut self, name: &'a str, value: &'a str) -> Self {
-        if matches!(name, "Connection" | "Accept-Encoding" | "Content-Length") {
-            panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name);
-        }
         self.request.headers.push(Header { name, value });
         self
     }
@@ -190,10 +186,15 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 /// You can build a request either through this struct directly
 /// or through a [`RequestBuilder`].
 ///
-/// Three headers are managed by rtv and will be set automatically:
+/// These headers will be set automatically:
+/// - `Content-Length: ...`
 /// - `Connection: close`
 /// - `Accept-Encoding: identity`
-/// - `Content-Length: ...`
+/// - `Accept-Charset: utf8`
+///
+/// You can overwrite the `Accept-Encoding` and `Accept-Charset` headers
+/// if you wanna manage these yourself.
+/// You should not overwrite the other automatic headers.
 ///
 /// # Example
 ///
@@ -203,7 +204,14 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 /// let req = Request::get().secure().host("example.com");
 /// ```
 ///
-/// Create a request directly.
+/// Overwrite the `Accept-Encoding` header.
+///
+/// ```rust
+/// let req = Request::get().set("Accept-Encoding", "gzip");
+/// ```
+///
+/// Create a request directly,
+/// although this is not recommended.
 ///
 /// ```rust
 /// let req = Request {
@@ -221,6 +229,8 @@ pub struct Request<'a> {
     pub uri: Uri<'a>,
     pub queries: Vec<Query<'a>>,
     pub headers: Vec<Header<'a>>,
+    pub override_encoding: bool,
+    pub override_charset: bool,
     pub body: &'a [u8],
 }
 
@@ -277,12 +287,8 @@ impl<'a> Request<'a> {
         }
 
         let mut headers = String::new();
-        for Header { name, value } in self.headers.iter() {
-            headers += name;
-            headers += ": ";
-            headers += value;
-            headers += "\r\n";
-        }
+        let mut overwrite_encoding = false;
+        let mut overwrite_charset = false;
 
         headers += "Content-Length: ";
         headers += &self.body.len().to_string();
@@ -291,8 +297,27 @@ impl<'a> Request<'a> {
         headers += "Connection: close";
         headers += "\r\n";
 
-        headers += "Accept-Encoding: identity";
-        headers += "\r\n";
+        for Header { name, value } in self.headers.iter() {
+            if *name == "Connection" || *name == "Content-Length" {
+                panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name);
+            }
+            else if *name == "Accept-Encoding" { overwrite_encoding = true }
+            else if *name == "Accept-Charset" { overwrite_charset = true }
+            headers += name;
+            headers += ": ";
+            headers += value;
+            headers += "\r\n";
+        }
+
+        if overwrite_encoding {
+            headers += "Accept-Encoding: identity";
+            headers += "\r\n";
+        }
+
+        if overwrite_charset {
+            headers += "Accept-Charset: utf-8";
+            headers += "\r\n";
+        }
 
         let head = format!("{} /{} HTTP/1.1\r\nHost: {}\r\n{}\r\n", method, trimmed_path, host, headers);
         let mut bytes = head.into_bytes();
