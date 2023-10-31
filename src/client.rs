@@ -3,7 +3,7 @@
 
 use mio::net::TcpStream;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
-use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, hash}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader};
+use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, hash}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader, decoder};
 
 #[cfg(feature = "tls")]
 use std::sync::Arc;
@@ -434,7 +434,7 @@ impl Client {
 
                                                 let chain = io::Cursor::new(buffer).chain(connection);
                                                 let recv = if transfer_chunked {
-                                                    RecvBody::Chunked(chunked_transfer::Decoder::new(chain))
+                                                    RecvBody::Chunked(decoder::Decoder::new(chain))
                                                 } else {
                                                     RecvBody::Plain(chain)
                                                 };
@@ -653,7 +653,7 @@ impl InternalReqState {
 
 enum RecvBody {
     Plain(io::Chain<io::Cursor<Vec<u8>>, Connection>),
-    Chunked(chunked_transfer::Decoder<io::Chain<io::Cursor<Vec<u8>>, Connection>>)
+    Chunked(decoder::Decoder<io::Chain<io::Cursor<Vec<u8>>, Connection>>)
 }
 
 impl RecvBody {
