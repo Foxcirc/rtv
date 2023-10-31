@@ -61,7 +61,7 @@ fn http_request() {
     let req = Request::get()
         .secure()
         .timeout(Duration::from_secs(5))
-        .host("www.google.com")
+        .host("crates.io")
         .user_agent("foxcirc's rtv");
 
     let _id = client.send(&io, mio::Token(1), req).unwrap();
@@ -158,7 +158,7 @@ fn streaming_request() {
 
     let mut client = SimpleClient::new().unwrap();
 
-    let mut resp = client.stream(Request::get().secure().host("www.youtube.com")).unwrap();
+    let mut resp = client.stream(Request::get().secure().host("crates.io").user_agent("foxcirc's rtv")).unwrap();
     // println!("{:?}", resp.head);
 
     let mut buff = Vec::new();

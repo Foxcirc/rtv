@@ -419,7 +419,7 @@ pub enum ResponseState {
     /// The request timed out. This will only occur if you set a timeout for a request.
     TimedOut,
     /// The server unexpectedly closed the connection for this request.
-    Dead,
+    Aborted,
     /// The host could not be found.
     UnknownHost,
     /// An error occured while reading the response. For example the server could've send invalid data.
@@ -446,7 +446,7 @@ impl ResponseState {
             Self::Data(..)    => false,
             Self::Done        => true,
             Self::TimedOut    => false,
-            Self::Dead        => false,
+            Self::Aborted        => false,
             Self::UnknownHost => false,
             Self::Error       => false,
         }
@@ -459,7 +459,7 @@ impl ResponseState {
             Self::Data(..)    => false,
             Self::Done        => false,
             Self::TimedOut    => true,
-            Self::Dead        => true,
+            Self::Aborted        => true,
             Self::UnknownHost => true,
             Self::Error       => true,
         }
@@ -475,7 +475,7 @@ impl fmt::Debug for ResponseState {
             Self::Head(head) => write!(f, "Head({:?})", head),
             Self::Data(data) => write!(f, "Data({} bytes)", data.len()),
             Self::Done => write!(f, "Done"),
-            Self::Dead => write!(f, "Dead"),
+            Self::Aborted => write!(f, "Dead"),
             Self::UnknownHost => write!(f, "UnknownHost"),
             Self::Error => write!(f, "Error"),
         }

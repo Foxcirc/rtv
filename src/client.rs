@@ -384,7 +384,7 @@ impl Client {
 
                                         buffer.truncate(bytes_read);
 
-                                        let mut headers = [httparse::EMPTY_HEADER; 1024]; // todo: make the max header count be controllable by the user
+                                        let mut headers = [httparse::EMPTY_HEADER; 4096]; // todo: make the max header count be controllable by the user
                                         let mut head = httparse::Response::new(&mut headers);
                                         let status = match head.parse(&buffer) {
                                             Ok(val) => val,
@@ -450,7 +450,7 @@ impl Client {
                                             }
 
                                         } else if closed {
-                                            responses.push(Response::new(request.id, ResponseState::Error));
+                                            responses.push(Response::new(request.id, ResponseState::Aborted));
                                             request.finish_error();
                                             continue 'rq;
                                         }
@@ -506,7 +506,7 @@ impl Client {
                                         continue 'rq
 
                                     } else if closed {
-                                        responses.push(Response::new(request.id, ResponseState::Error));
+                                        responses.push(Response::new(request.id, ResponseState::Aborted));
                                         request.finish_error();
                                         continue 'rq;
                                     }
