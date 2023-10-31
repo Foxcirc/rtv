@@ -7,7 +7,7 @@ It supports fully nonblocking requests, even dns resolution is nonblocking.
 You can either setup `mio` youself and then use a `Client` to make requests using your `Poll`
 or alternatively you can use a `SimpleClient` if don't need that much flexibility.
 
-# Example
+# Example (SimpleClient)
 
 It is really simple to make a single request using a `SimpleClient`.
 This is not the only functionality that `SimpleClient` provides though!
@@ -17,6 +17,10 @@ let mut client = SimpleClient::new()?;
 let request = Request::get().host("google.com");
 client.send(request)?;
 ```
+
+# Example (Client)
+
+You can find an example [here](https://docs.rs/rtv/latest/rtv/struct.Client.html) on docs.rs.
 
 # Mio Httpc
 
@@ -28,7 +32,7 @@ and stable. Rtv really is a *simple* HTTP client.
 # Notes
 
 Earlier versions of this crate were completely different.
-I decided to repurpose the name because I don't wanna litter my profile or `crates.io`.
+I decided to repurpose the name because I don't wanna litter my profile or crates.io.
 - First `rtv` was a crate for doing **r**ecursive-file-**t**ra**v**ersal
 - Then it was a crate for resolving futures (completely useless)
 
