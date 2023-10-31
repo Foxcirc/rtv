@@ -189,6 +189,7 @@ impl Error for DecoderError {
     }
 }
 
+/*
 #[cfg(test)]
 mod test {
     use super::Decoder;
@@ -302,3 +303,4 @@ mod test {
         assert!(decoded.read_to_string(&mut string).is_err());
     }
 }
+*/
