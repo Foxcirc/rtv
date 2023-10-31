@@ -7,20 +7,21 @@ It supports fully nonblocking requests, even dns resolution is nonblocking.
 You can either setup `mio` youself and then use a `Client` to make requests using your `Poll`
 or alternatively you can use a `SimpleClient` if don't need that much flexibility.
 
+## Example (Client)
+
+This is the main functionality that this crate provides.
+You can find an example [here](https://docs.rs/rtv/latest/rtv/struct.Client.html) on docs.rs.
+
 ## Example (SimpleClient)
 
-It is really simple to make a single request using a `SimpleClient`.
-This is not the only functionality that `SimpleClient` provides though!
+It is really simple to make a single request.
+This is not the only functionality that this client provides though!
 
 ```rust
 let mut client = SimpleClient::new()?;
 let request = Request::get().host("google.com");
 client.send(request)?;
 ```
-
-## Example (Client)
-
-You can find an example [here](https://docs.rs/rtv/latest/rtv/struct.Client.html) on docs.rs.
 
 ## Mio Httpc
 
