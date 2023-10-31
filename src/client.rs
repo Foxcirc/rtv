@@ -185,7 +185,7 @@ impl Client {
                 InternalReqState::Resolving {
                     body: request_bytes,
                     dns_id,
-                    host: request.uri.host.to_string(), // todo: zero-alloc: hash the host and store the hash
+                    host: hash(request.uri.host),
                     mode
                 }
 
@@ -236,6 +236,11 @@ impl Client {
     ///     println!("Got a response: {:?}", resp.state);
     /// }
     /// ```
+    ///
+    /// # Note
+    ///
+    /// The maximum response header count is currently 4096, but this will be
+    /// user-controllable in the future.
     pub fn pump(&mut self, io: &mio::Poll, events: &mio::Events) -> io::Result<Vec<Response>> {
 
         let mut responses = Vec::new();
@@ -280,8 +285,8 @@ impl Client {
                                             request.finish_error();
                                             continue 'rq;
                                         },
-                                        dns::DnsOutcome::Error => {
-                                            responses.push(Response::new(request.id, ResponseState::Error));
+                                        dns::DnsOutcome::ProtocolError => {
+                                            responses.push(Response::new(request.id, ResponseState::ProtocolError));
                                             request.finish_error();
                                             continue 'rq;
                                         },
@@ -295,7 +300,7 @@ impl Client {
                                     let state = replace(&mut request.state, InternalReqState::Unspecified);
                                     if let InternalReqState::Resolving { body, host, mode, .. } = state {
 
-                                        self.dns_cache.insert(hash(host), CachedAddr {
+                                        self.dns_cache.insert(host, CachedAddr {
                                             ip_addr: addr,
                                             time_created: Instant::now(),
                                             ttl,
@@ -389,7 +394,7 @@ impl Client {
                                         let status = match head.parse(&buffer) {
                                             Ok(val) => val,
                                             Err(_err) => {
-                                                responses.push(Response::new(request.id, ResponseState::Error));
+                                                responses.push(Response::new(request.id, ResponseState::ProtocolError));
                                                 request.finish_error();
                                                 continue 'rq;
                                             }
@@ -427,9 +432,6 @@ impl Client {
                                             let state = replace(&mut request.state, InternalReqState::Unspecified);
                                             if let InternalReqState::RecvHead { connection, buffer } = state {
 
-                                                // println!("BUFFER:\n{}", String::from_utf8_lossy(&buffer));
-                                                // todo: maybe use a bufReader at least for the chunked
-                                                    // mode, since the Decoder calls .bytes() sometimes
                                                 let chain = io::Cursor::new(buffer).chain(connection);
                                                 let recv = if transfer_chunked {
                                                     RecvBody::Chunked(chunked_transfer::Decoder::new(chain))
@@ -517,7 +519,7 @@ impl Client {
 
                         },
 
-                        _other => todo!(),
+                        _other => unreachable!(),
 
                     }
                     
@@ -620,7 +622,7 @@ enum InternalReqState {
     Resolving {
         body: Vec<u8>, // sent later
         dns_id: dns::DnsId,
-        host: String, // used for caching
+        host: u64, // hashed, used for caching
         mode: InternalMode, // used to create the connection later
     },
     Sending   {

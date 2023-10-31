@@ -66,7 +66,7 @@ impl SimpleClient {
     /// This method will send a single request and return a response once the
     /// [`ResponseHead`] has been transmitted.
     /// The response will contain a [`BodyReader`] as the `body` which implements
-    /// the [`Read`](std::io::Read) trait.
+    /// the [`Read`] trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
     pub fn stream<'a, 'd>(&'d mut self, input: impl Into<Request<'a>>) -> io::Result<SimpleResponse<BodyReader<'d>>> {
@@ -103,7 +103,7 @@ impl SimpleClient {
                     ResponseState::Aborted     => return Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
                     ResponseState::TimedOut    => return Err(io::Error::from(io::ErrorKind::TimedOut)),
                     ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                    ResponseState::Error       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
+                    ResponseState::ProtocolError       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
                 }
             }
 
@@ -186,7 +186,7 @@ impl SimpleClient {
                     ResponseState::Aborted     => responses[response.id.inner] = Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
                     ResponseState::TimedOut    => responses[response.id.inner] = Err(io::Error::from(io::ErrorKind::TimedOut)),
                     ResponseState::UnknownHost => responses[response.id.inner] = Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                    ResponseState::Error       => responses[response.id.inner] = Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
+                    ResponseState::ProtocolError       => responses[response.id.inner] = Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
                 }
             }
 
@@ -242,7 +242,7 @@ impl<'b> io::Read for BodyReader<'b> {
                         ResponseState::Aborted     => return Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
                         ResponseState::TimedOut    => return Err(io::Error::from(io::ErrorKind::TimedOut)),
                         ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                        ResponseState::Error       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
+                        ResponseState::ProtocolError       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
                     }
 
                 }
@@ -269,7 +269,9 @@ impl<'b> io::Read for BodyReader<'b> {
 
 /// A simple response.
 ///
-/// This cannot be errornous at protocol level.
+/// Use the alternate debug formatter `{:#?}` to print out verbose information
+/// including all headers and more.
+///
 /// The `body` may be a [`Vec<u8>`](std::vec::Vec), or a [`BodyReader`].
 #[derive(Clone)]
 pub struct SimpleResponse<B> {
@@ -307,7 +309,7 @@ impl SimpleResponse<Vec<u8>> {
 
 impl<B> fmt::Debug for SimpleResponse<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SimpleResponse {{ ... }}") // todo: print information about the head
+        write!(f, "SimpleResponse {{ status: {}, {} }}", self.head.status.code, self.head.status.reason)
     }
 }
 

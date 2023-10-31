@@ -189,7 +189,7 @@ fn new_dns_packet(id: u16, hostname: &str) -> Vec<u8> {
 pub(crate) enum DnsOutcome {
     Known { addr: Ipv4Addr, ttl: time::Duration },
     Unknown,
-    Error,
+    ProtocolError,
     TimedOut,
 }
 
@@ -208,14 +208,14 @@ impl DnsResponse {
             dns_parser::ResponseCode::NoError => {
                 match parse_answer(&packet) {
                     Some((addr, ttl)) => DnsOutcome::Known { addr, ttl },
-                    None => DnsOutcome::Error,
+                    None => DnsOutcome::ProtocolError,
                 }
             },
             dns_parser::ResponseCode::NameError => {
                 DnsOutcome::Unknown
             },
             _ => {
-                DnsOutcome::Error
+                DnsOutcome::ProtocolError
             }
         };
 
@@ -239,7 +239,7 @@ impl fmt::Debug for DnsResponse {
         match self.outcome {
             DnsOutcome::Known { addr, ttl } => write!(f, "{:?}, ttl: {:?}", addr, ttl),
             DnsOutcome::Unknown => write!(f, "Unknown"),
-            DnsOutcome::Error => write!(f, "Error"),
+            DnsOutcome::ProtocolError => write!(f, "Dns Protocol Error"),
             DnsOutcome::TimedOut => write!(f, "TimedOut"),
         }
     }

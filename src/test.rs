@@ -135,7 +135,7 @@ fn many_request() {
     let mut reqs = vec![req; NUM_REQUESTS];
     reqs.push(other_req);
 
-    let resps = client.many(reqs).unwrap(); // todo: make SimpleClient::many support slices and not only Vec
+    let resps = client.many(reqs).unwrap();
 
     println!("Total requests: {}", NUM_REQUESTS + 1);
     println!("Total responses: {}", resps.len());

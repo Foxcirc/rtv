@@ -228,8 +228,6 @@ pub struct Request<'a> {
     pub uri: Uri<'a>,
     pub queries: Vec<Query<'a>>,
     pub headers: Vec<Header<'a>>,
-    pub override_encoding: bool,
-    pub override_charset: bool,
     pub body: &'a [u8],
 }
 
@@ -287,7 +285,6 @@ impl<'a> Request<'a> {
 
         let mut headers = String::new();
         let mut overwrite_encoding = false;
-        let mut overwrite_charset = false;
 
         headers += "Content-Length: ";
         headers += &self.body.len().to_string();
@@ -346,6 +343,9 @@ pub struct Status {
 /// The `Head` of a response. This is not to be confused with an HTTP `Header`.
 ///
 /// The response head contains informations about the response.
+///
+/// Use the alternate debug formatter `{:#?}` to print out verbose information
+/// including all headers and more.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ResponseHead {
     pub status: Status,
@@ -359,6 +359,8 @@ pub struct ResponseHead {
 impl ResponseHead {
 
     /// Get the value of a header. Returns `None` if the header could not be found.
+    ///
+    /// This does a linear search through the inner vec.
     pub fn get_header<'d>(&'d self, name: &str) -> Option<&'d str> {
         self.headers.iter().find_map(Self::match_header(name))
     }
@@ -368,7 +370,7 @@ impl ResponseHead {
         self.headers.iter().filter_map(Self::match_header(name))
     }
 
-    fn match_header<'d>(name: &'d str) -> impl for<'e> Fn(&'e OwnedHeader) -> Option<&'e str> + 'd {
+    fn match_header<'d>(name: &'d str) -> impl for<'e> Fn(&'e OwnedHeader) -> Option<&'e str> + 'd { // i know the `+ 'd` is technically incorrect
         move |header| if header.name == name { Some(&header.value[..]) } else { None }
     }
 
@@ -376,22 +378,34 @@ impl ResponseHead {
 
 impl fmt::Debug for ResponseHead {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "ResponseHead {{")?;
-        writeln!(f, "    headers: [")?;
-        for header in self.headers.iter() {
-            writeln!(f, "        {}: {}", header.name, header.value)?;
+        if f.alternate() {
+            writeln!(f, "ResponseHead {{")?;
+            writeln!(f, "    headers: [")?;
+            for header in self.headers.iter() {
+                writeln!(f, "        {}: {}", header.name, header.value)?;
+            }
+            writeln!(f, "    ]")?;
+            writeln!(f, "    status: {:?}", self.status)?;
+            writeln!(f, "    content_length: {:?}", self.content_length)?;
+            writeln!(f, "    transfer_chunked: {:?}", self.transfer_chunked)?;
+            write!(f, "}}")?;
+            Ok(())
+        } else {
+            if self.transfer_chunked {
+                write!(f, "ResponseHead {{ status: {}: {}, transfer_chunked: true, ... }}",
+                    self.status.code,
+                    self.status.reason)
+            } else {
+                write!(f, "ResponseHead {{ status: {}: {}, content_length: {}, ... }}",
+                    self.status.code,
+                    self.status.reason,
+                    self.content_length)
+            }
         }
-        writeln!(f, "    ]")?;
-        writeln!(f, "    status: {:?}", self.status)?;
-        writeln!(f, "    content_length: {:?}", self.content_length)?;
-        writeln!(f, "    transfer_chunked: {:?}", self.transfer_chunked)?;
-        write!(f, "}}")?;
-        Ok(())
     }
 }
 
-/// An HTTP response.
-/// Contains a [`ResponseState`].
+/// An HTTP response. Contains a [`ResponseState`].
 ///
 /// A `Response` is **not** a full HTTP response but just one part of it. This arcitecture
 /// allows for streaming the response data, not waiting for everything to arrive.
@@ -402,6 +416,7 @@ impl fmt::Debug for ResponseHead {
 /// match resp.state {
 ///     ResponseState::Head(head) => println!("content_length is {} bytes", head.content_length),
 ///     ResponseState::Data(some_data) => response_data_buffer.extend_from_slice(&some_data),
+///     other if other.is_error() => panic!("error: {:?}", other),
 ///     ...
 /// }
 /// ```
@@ -422,14 +437,20 @@ impl Response {
 /// The state of a response.
 ///
 /// For more information see [`Request`].
-/// The first thing you receive should be [`ResponseState::Head`], at least in a normal scenario.
-/// If the request is finished and no error occured you will always receive [`ResponseState::Done`]
-/// and no more events for that request afterwards.
+/// The first thing you receive will always be [`ResponseState::Head`].
+///
+/// In order to determine if a request has finished have a look at
+/// [`is_done`](ResponseState::is_done),
+/// [`is_error`](ResponseState::is_error),
+/// [`is_finished`](ResponseState::is_finished)
+///
+/// After eiteher of these three methods have returned `true` you will receive no more
+/// events for this Request.
 #[derive(PartialEq, Eq)]
 pub enum ResponseState {
     /// The response head. Contains information about what the response contains.
     Head(ResponseHead),
-    /// We have read *some* data for this request. The data is not transmitted all at once,
+    /// We have read **some** data for this request. The data is not transmitted all at once,
     /// everytime the server sends a chunk of data you will receive one of these.
     Data(Vec<u8>),
     /// The request is done and will not generate any more events.
@@ -440,16 +461,15 @@ pub enum ResponseState {
     Aborted,
     /// The host could not be found.
     UnknownHost,
-    /// An error occured while reading the response. For example the server could've send invalid data.
-    // todo: update these docs ^^
-    Error,
+    /// An http protocol error occured while reading the response. For example the server could've send invalid data.
+    ProtocolError,
 }
 
 impl ResponseState {
 
     /// Returns `true` if this state signals that the request is finished.
     ///
-    /// This is literally implemented as:
+    /// This is implemented as:
     /// ```
     /// self.is_completed() || self.is_error()
     /// ```
@@ -460,26 +480,26 @@ impl ResponseState {
     /// Returns `true` if this state is `Done`.
     pub fn is_done(&self) -> bool {
         match self {
-            Self::Head(..)    => false,
-            Self::Data(..)    => false,
-            Self::Done        => true,
-            Self::TimedOut    => false,
-            Self::Aborted        => false,
-            Self::UnknownHost => false,
-            Self::Error       => false,
+            Self::Head(..)      => false,
+            Self::Data(..)      => false,
+            Self::Done          => true, // <-
+            Self::TimedOut      => false,
+            Self::Aborted       => false,
+            Self::UnknownHost   => false,
+            Self::ProtocolError => false,
         }
     }
 
     /// Returns `true` if this state is either `Dead`, `TimedOut`, `UnknownHost` or `Error`.
     pub fn is_error(&self) -> bool {
         match self {
-            Self::Head(..)    => false,
-            Self::Data(..)    => false,
-            Self::Done        => false,
-            Self::TimedOut    => true,
-            Self::Aborted        => true,
-            Self::UnknownHost => true,
-            Self::Error       => true,
+            Self::Head(..)      => false,
+            Self::Data(..)      => false,
+            Self::Done          => false,
+            Self::TimedOut      => true, // <-
+            Self::Aborted       => true, // <-
+            Self::UnknownHost   => true, // <-
+            Self::ProtocolError => true, // <-
         }
     }
 
@@ -495,7 +515,7 @@ impl fmt::Debug for ResponseState {
             Self::Done => write!(f, "Done"),
             Self::Aborted => write!(f, "Dead"),
             Self::UnknownHost => write!(f, "UnknownHost"),
-            Self::Error => write!(f, "Error"),
+            Self::ProtocolError => write!(f, "Error"),
         }
     }
 }
