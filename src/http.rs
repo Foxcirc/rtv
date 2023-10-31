@@ -190,11 +190,10 @@ impl<'a> From<RequestBuilder<'a>> for Request<'a> {
 /// - `Content-Length: ...`
 /// - `Connection: close`
 /// - `Accept-Encoding: identity`
-/// - `Accept-Charset: utf8`
 ///
-/// You can overwrite the `Accept-Encoding` and `Accept-Charset` headers
-/// if you wanna manage these yourself.
-/// You should not overwrite the other automatic headers.
+/// You can overwrite the `Accept-Encoding` header
+/// if you wanna receive encoded body data.
+/// You cannot overwrite the other automatic headers.
 ///
 /// # Example
 ///
@@ -302,7 +301,6 @@ impl<'a> Request<'a> {
                 panic!("The `{}` header is managed by rtv, for more info see the `Request` documentation", name);
             }
             else if *name == "Accept-Encoding" { overwrite_encoding = true }
-            else if *name == "Accept-Charset" { overwrite_charset = true }
             headers += name;
             headers += ": ";
             headers += value;
@@ -311,11 +309,6 @@ impl<'a> Request<'a> {
 
         if overwrite_encoding {
             headers += "Accept-Encoding: identity";
-            headers += "\r\n";
-        }
-
-        if overwrite_charset {
-            headers += "Accept-Charset: utf-8";
             headers += "\r\n";
         }
 

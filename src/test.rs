@@ -61,7 +61,7 @@ fn http_request() {
     let req = Request::get()
         .secure()
         .timeout(Duration::from_secs(5))
-        .host("crates.io")
+        .host("www.google.com")
         .user_agent("foxcirc's rtv");
 
     let _id = client.send(&io, mio::Token(1), req).unwrap();
