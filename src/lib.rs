@@ -39,7 +39,6 @@ mod dns;
 pub mod http;
 pub mod client;
 pub mod simple;
-pub mod simple_async;
 
 #[cfg(test)]
 mod test;

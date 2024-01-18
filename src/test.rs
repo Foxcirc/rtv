@@ -1,5 +1,5 @@
 
-use std::time::Duration;
+use std::{iter::once, time::Duration, array};
 use crate::{dns, Client, Request, SimpleClient};
 
 #[test]
@@ -132,33 +132,45 @@ fn chunked_request() {
 
 }
 
-// #[test]
-// fn many_request() {
+#[test]
+fn many_request() {
 
-//     const NUM_REQUESTS: usize = 16;
+    extreme::run(async {
 
-//     let mut client = SimpleClient::new().unwrap();
+        const NUM_REQUESTS: usize = 16;
 
-//     let req = Request::get().host("google.com");
-//     let other_req = Request::get().host("example.com");
-//     let mut reqs = vec![req; NUM_REQUESTS];
-//     reqs.push(other_req);
+        let mut client = SimpleClient::new().unwrap();
 
-//     let resps = client.many(reqs).unwrap();
+        let req1 = Request::get().host("google.com");
+        let req2 = Request::get().host("example.com");
+        let array: [_; NUM_REQUESTS] = array::from_fn(|_| req1.clone());
+        let iter = array.into_iter().chain(once(req2));
 
-//     println!("Total requests: {}", NUM_REQUESTS + 1);
-//     println!("Total responses: {}", resps.len());
+        let mut futs = Vec::new();
+        for req in iter {
+            let fut = client.send(req);
+            futs.push(fut);
+        }
 
-//     for (idx, result) in resps.into_iter().enumerate() {
-//         let resp = result.unwrap();
-//         println!("Got a response {:?}", resp);
-//         if idx == NUM_REQUESTS + 1 - 1 {
-//             assert!(resp.body.len() == 1256, "Last resp must be the example.com one!");
-//             assert!(resp.head.status.code == 200, "Last resp must be the example.com one!");
-//         }
-//     }
+        // luckily rtv will egerly execute and push the requests to completion,
+        // so we don't need join_all or an executor here ;)
+        let mut resps = Vec::new();
+        for fut in futs {
+            let resp = fut.await;
+            resps.push(resp);
+        }
 
-// }
+        println!("Total requests: {}", NUM_REQUESTS + 1);
+        println!("Total responses: {}", resps.len());
+
+        for result in resps.into_iter() {
+            let resp = result.unwrap();
+            println!("Got a response {:?}", resp);
+        }
+        
+    })
+
+}
 
 
 #[test]

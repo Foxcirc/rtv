@@ -1,7 +1,7 @@
 
 //! This module contains a [`SimpleClient`] that allows sending simple requests.
 
-use std::{fmt, io::{self, Read, Write}, string, thread, sync::{Arc, Mutex}, collections::{HashMap, VecDeque}, task::{self, Waker, Poll}, future, pin::Pin};
+use std::{fmt, io::{self, Read, Write}, string, thread, sync::{Arc, Mutex}, collections::{HashMap, VecDeque}, task::{self, Waker, Poll}, future::{self, Future}, pin::Pin};
 use futures_lite::AsyncReadExt;
 
 use crate::{Client, ResponseHead, ResponseState, RawRequest, util::wouldblock};
@@ -147,15 +147,19 @@ impl SimpleClient {
     ///
     /// This method will send a single request and block until the
     /// response arrives.
-    pub async fn send(&mut self, input: impl Into<RawRequest>) -> io::Result<SimpleResponse<Vec<u8>>> {
+    pub fn send(&mut self, input: impl Into<RawRequest>) -> impl Future<Output = io::Result<SimpleResponse<Vec<u8>>>> {
 
-        let mut response = self.stream(input).await?;
-        let mut buff = Vec::with_capacity(2048);
-        response.body.read_to_end(&mut buff).await?;
-        Ok(SimpleResponse {
-            head: response.head,
-            body: buff,
-        })
+        let future = self.stream(input);
+
+        async move {
+            let mut response = future.await?;
+            let mut buff = Vec::with_capacity(2048);
+            response.body.read_to_end(&mut buff).await?;
+            Ok(SimpleResponse {
+                head: response.head,
+                body: buff,
+            })
+        }
 
     }
 
@@ -169,7 +173,7 @@ impl SimpleClient {
     /// the [`AsyncRead`] trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
-    pub async fn stream<'d>(&'d mut self, input: impl Into<RawRequest>) -> io::Result<SimpleResponse<BodyReader>> {
+    pub fn stream<'d>(&'d mut self, input: impl Into<RawRequest>) -> impl Future<Output = io::Result<SimpleResponse<BodyReader>>> {
 
         let request = input.into();
 
@@ -182,29 +186,33 @@ impl SimpleClient {
         let reaper_clone = Arc::clone(&request_state);
         self.sender.write_all(&(Arc::into_raw(reaper_clone) as u64).to_ne_bytes()).unwrap();
 
-        let head = future::poll_fn(|ctx| {
+        async move {
 
-            let mut guard = request_state.lock().unwrap();
+            let head = future::poll_fn(|ctx| {
 
-            guard.waker = Some(ctx.waker().clone());
+                let mut guard = request_state.lock().unwrap();
 
-            if let Some(resp) = guard.resps.pop_front() {
-                let result = match resp {
-                    ResponseState::Head(head) => Ok(head),
-                    error_or_data => Err(error_or_data.into_io_error().unwrap())
-                };
-                Poll::Ready(result)
-            } else {
-                Poll::Pending
-            }
+                guard.waker = Some(ctx.waker().clone());
 
-        }).await?;
+                if let Some(resp) = guard.resps.pop_front() {
+                    let result = match resp {
+                        ResponseState::Head(head) => Ok(head),
+                        error_or_data => Err(error_or_data.into_io_error().unwrap())
+                    };
+                    Poll::Ready(result)
+                } else {
+                    Poll::Pending
+                }
+
+            }).await?;
         
-        let reader = BodyReader {
-            request_state,
-        };
+            let reader = BodyReader {
+                request_state,
+            };
 
-        return Ok(SimpleResponse { head, body: reader });
+            Ok(SimpleResponse { head, body: reader })
+            
+        }
 
     }
 
