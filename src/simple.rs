@@ -1,9 +1,10 @@
 
 //! This module contains a [`SimpleClient`] that allows sending simple requests.
 
-use std::{fmt, io::{self, Read}, string};
+use std::{fmt, io::{self, Read, Write}, string, thread, sync::{Arc, Mutex}, collections::{HashMap, VecDeque}, task::{self, Waker, Poll}, future, pin::Pin};
+use futures_lite::AsyncReadExt;
 
-use crate::{Client, Request, ResponseHead, ResponseState, Status};
+use crate::{Client, ResponseHead, ResponseState, RawRequest, util::wouldblock};
 
 /// A simpler HTTP client that handles I/O events for you.
 ///
@@ -22,23 +23,122 @@ use crate::{Client, Request, ResponseHead, ResponseState, Status};
 /// let body_str = String::from_utf8(resp.body); // note: not all websites use UTF-8!
 /// println!("{}", body_str);
 /// ```
+
+// todo: the whole simple.rs is available on 64bit unix only due to mio::unix::Pipe being used
 pub struct SimpleClient {
-    io: mio::Poll,
-    client: Client,
-    next_id: usize,
+    reaper: Option<thread::JoinHandle<()>>,
+    sender: mio::unix::pipe::Sender,
+}
+
+impl Drop for SimpleClient {
+    fn drop(&mut self) {
+        self.shutdown();
+        self.reaper.take().unwrap().join().unwrap();
+    }
+}
+
+struct SimpleRequestState {
+    pub request: Option<RawRequest>,
+    pub resps: VecDeque<ResponseState>,
+    pub waker: Option<Waker>,
 }
 
 impl SimpleClient {
 
+    const CLIENT:   mio::Token = mio::Token(0);
+    const RECEIVER: mio::Token = mio::Token(1);
+    const STARTID: usize = 2;
+
     /// Creates a new client
     ///
-    /// The result maybe an IO error produced by `mio`.
+    /// An error is a fatal failure and probably means that the system doesn't support all necessary functionality.
     pub fn new() -> io::Result<Self> {
 
+        let mut io = mio::Poll::new()?;
+        let (sender, mut receiver) = mio::unix::pipe::new()?;
+
+        // io.registry().register(&mut sender, Self::SENDER, mio::Interest::WRITABLE);
+        // ^^^ we don't register the sender, since we will write to it in blocking mode 
+        sender.set_nonblocking(false).unwrap();
+
+        io.registry().register(&mut receiver, Self::RECEIVER, mio::Interest::READABLE)?;
+
         Ok(Self {
-            io: mio::Poll::new()?,
-            client: Client::new(mio::Token(0)),
-            next_id: 1,
+            reaper: Some(thread::spawn(move || {
+
+                let mut client = Client::new(Self::CLIENT);
+                let mut next_id = Self::STARTID;
+
+                let mut requests = HashMap::with_capacity(8);
+
+                loop {
+
+                    let mut events = mio::Events::with_capacity(32);
+                    io.poll(&mut events, None).unwrap();
+
+                    'events: for event in events.iter() {
+
+                        if event.token() == Self::RECEIVER {
+
+                            loop {
+
+                                let mut buff = [0; 8];
+
+                                match receiver.read(&mut buff) {
+                                    Ok(_bytes_read) => assert!(_bytes_read == 8),
+                                    Err(ref err) if wouldblock(err) => break 'events,
+                                    Err(err) => panic!("{}", err),
+                                };
+
+                                // writing all zeroes signals that we should shutdown
+                                // we shut down without waiting for any further events
+                                if buff == [0; 8] {
+                                    return
+                                };
+
+                                let request_state = unsafe { Arc::from_raw(
+                                    u64::from_ne_bytes(buff) as *mut Mutex<SimpleRequestState>
+                                ) };
+                                let mut guard = request_state.lock().unwrap();
+
+                                let token = next_id;
+                                next_id += 1;
+
+                                let request = guard.request.take().unwrap();
+                                let id = client.send(&io, mio::Token(token), request).unwrap(); // todo: can someting be done about all these unwraps
+
+                                drop(guard);
+
+                                requests.insert(id, request_state);
+
+                            }
+
+                        }                        
+
+                    }
+
+                    for resp in client.pump(&io, &events).unwrap() {
+
+                        let is_finished = resp.state.is_finished();
+
+                        let request_state = requests.get(&resp.id).unwrap();
+                        let mut guard = request_state.lock().unwrap();
+                        guard.resps.push_back(resp.state);
+                        if let Some(ref waker) = guard.waker {
+                            waker.wake_by_ref();
+                        }
+                        drop(guard);
+
+                        if is_finished {
+                            requests.remove(&resp.id);
+                        }
+
+                    };
+                    
+                }
+                
+            })),
+            sender
         })
 
     }
@@ -47,11 +147,11 @@ impl SimpleClient {
     ///
     /// This method will send a single request and block until the
     /// response arrives.
-    pub fn send<'a>(&mut self, input: impl Into<Request<'a>>) -> io::Result<SimpleResponse<Vec<u8>>> {
+    pub async fn send(&mut self, input: impl Into<RawRequest>) -> io::Result<SimpleResponse<Vec<u8>>> {
 
-        let mut response = self.stream(input)?;
+        let mut response = self.stream(input).await?;
         let mut buff = Vec::with_capacity(2048);
-        response.body.read_to_end(&mut buff)?;
+        response.body.read_to_end(&mut buff).await?;
         Ok(SimpleResponse {
             head: response.head,
             body: buff,
@@ -66,140 +166,51 @@ impl SimpleClient {
     /// This method will send a single request and return a response once the
     /// [`ResponseHead`] has been transmitted.
     /// The response will contain a [`BodyReader`] as the `body` which implements
-    /// the [`Read`] trait.
+    /// the [`AsyncRead`] trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
-    pub fn stream<'a, 'd>(&'d mut self, input: impl Into<Request<'a>>) -> io::Result<SimpleResponse<BodyReader<'d>>> {
+    pub async fn stream<'d>(&'d mut self, input: impl Into<RawRequest>) -> io::Result<SimpleResponse<BodyReader>> {
 
-        let request: Request = input.into();
-        let mut events = mio::Events::with_capacity(2);
-        let mut result = SimpleResponse::empty();
-        let mut is_done = false;
+        let request = input.into();
 
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
+        let request_state = Arc::new(Mutex::new(SimpleRequestState {
+            request: Some(request),
+            resps: VecDeque::new(),
+            waker: None
+        }));
 
-        self.client.send(&self.io, mio::Token(id), request)?;
+        let reaper_clone = Arc::clone(&request_state);
+        self.sender.write_all(&(Arc::into_raw(reaper_clone) as u64).to_ne_bytes()).unwrap();
 
-        let mut stop = false;
+        let head = future::poll_fn(|ctx| {
 
-        loop {
+            let mut guard = request_state.lock().unwrap();
 
-            self.io.poll(&mut events, self.client.timeout())?;
+            guard.waker = Some(ctx.waker().clone());
 
-            for response in self.client.pump(&self.io, &events)? {
-                match response.state {
-                    ResponseState::Head(head) => {
-                        result.head = head;
-                        stop = true;
-                    },
-                    // we need to process all the response states, since the whole request
-                    // might have been transmitted at once (but split into multiple ResponseStates)
-                    ResponseState::Data(some_data) => result.body.extend(some_data),
-                    ResponseState::Done => {
-                        is_done = true;
-                        stop = true;
-                    },
-                    ResponseState::Aborted     => return Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
-                    ResponseState::TimedOut    => return Err(io::Error::from(io::ErrorKind::TimedOut)),
-                    ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                    ResponseState::ProtocolError       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
-                }
+            if let Some(resp) = guard.resps.pop_front() {
+                let result = match resp {
+                    ResponseState::Head(head) => Ok(head),
+                    error_or_data => Err(error_or_data.into_io_error().unwrap())
+                };
+                Poll::Ready(result)
+            } else {
+                Poll::Pending
             }
 
-            // we need to check this here because we have to process all the responses
-            if stop {
-                break
-            }
-
-            events.clear();
-
-        }
-
+        }).await?;
+        
         let reader = BodyReader {
-            io: &mut self.io,
-            client: &mut self.client,
-            events: mio::Events::with_capacity(4),
-            storage: result.body,
-            is_done,
+            request_state,
         };
 
-        return Ok(SimpleResponse { head: result.head, body: reader });
+        return Ok(SimpleResponse { head, body: reader });
 
     }
 
-    /// Send many requests.
-    ///
-    /// This method allows sending multiple requests and waiting for them to
-    /// resolve all at the same time.
-    /// 
-    /// The responses will be in the same order as the requests and the number
-    /// of responses will always be the same as the number of requests.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// let reqs = vec![Request::get().host("example.com"), Request::get().host("wikipedia.org")];
-    /// let mut client = SimpleClient::new()?;
-    /// let resps = client.send(reqs)?;
-    /// resps[0]? // belongs to example.com
-    /// resps[1]? // belongs to wikipedia.org
-    /// assert!(resps.len() == reqs.len());
-    /// ```
-    ///
-    /// # Note
-    /// This method is currently pretty inefficient because
-    /// - since everything is sent at the same time, there will be one dns resolution for every request
-    /// - since this is http 1.1 (without multiplexing) there will be one tcp stream for every request
-    // todo: add the possibility to resolve the dns address yourself (using the `dns` module)
-    pub fn many<'a>(&mut self, input: impl IntoIterator<Item = impl Into<Request<'a>>>) -> io::Result<Vec<io::Result<SimpleResponse<Vec<u8>>>>> {
-
-        let iter = input.into_iter();
-        let (min_size, _max_size) = iter.size_hint();
-
-        let mut responses = Vec::with_capacity(min_size);
-        let mut events = mio::Events::with_capacity(min_size * 2);
-
-        for item in iter {
-
-            let request = item.into();
-            responses.push(Ok(SimpleResponse::empty()));
-
-            let id = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1);
-
-            self.client.send(&self.io, mio::Token(id), request)?;
-
-        }
-
-        let mut done = 0;
-
-        loop {
-
-            self.io.poll(&mut events, self.client.timeout())?;
-
-            for response in self.client.pump(&self.io, &events)? {
-                match response.state {
-                    ResponseState::Head(head)  => if let Ok(val) = &mut responses[response.id.inner] { val.head = head },
-                    ResponseState::Data(data)  => if let Ok(val) = &mut responses[response.id.inner] { val.body.extend(data) },
-                    ResponseState::Done        => done += 1,
-                    ResponseState::Aborted     => responses[response.id.inner] = Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
-                    ResponseState::TimedOut    => responses[response.id.inner] = Err(io::Error::from(io::ErrorKind::TimedOut)),
-                    ResponseState::UnknownHost => responses[response.id.inner] = Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                    ResponseState::ProtocolError       => responses[response.id.inner] = Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
-                }
-            }
-
-            if done == responses.len() {
-                break
-            }
-
-            events.clear();
-
-        }
-
-        Ok(responses)
-
+    fn shutdown(&mut self) {
+        // indicates to the reaper thread that it should shut itself down
+        self.sender.write_all(&[0; 8]).unwrap();
     }
 
 }
@@ -208,61 +219,46 @@ impl SimpleClient {
 ///
 /// This does some internal buffering.
 /// For more information see [`SimpleClient::stream`].
-pub struct BodyReader<'b> {
-    pub(crate) io: &'b mut mio::Poll,
-    pub(crate) client: &'b mut Client,
-    pub(crate) events: mio::Events,
-    pub(crate) storage: Vec<u8>,
-    pub(crate) is_done: bool,
+pub struct BodyReader {
+    request_state: Arc<Mutex<SimpleRequestState>>,
 }
 
-impl<'b> io::Read for BodyReader<'b> {
+impl futures_io::AsyncRead for BodyReader {
 
-    fn read(&mut self, buff: &mut [u8]) -> io::Result<usize> {
+    fn poll_read(self: Pin<&mut Self>, ctx: &mut task::Context<'_>, buff: &mut [u8]) -> Poll<io::Result<usize>> {
 
-        if self.storage.is_empty() && !self.is_done {
+        let mut guard = self.request_state.lock().unwrap();
 
-            'ev: loop {
-
-                let mut stop = false;
-                self.io.poll(&mut self.events, self.client.timeout())?;
-
-                for response in self.client.pump(&self.io, &self.events)? {
-                    
-                    match response.state {
-                        ResponseState::Head(..) => unreachable!(),
-                        ResponseState::Data(some_data) => {
-                            self.storage.extend(some_data);
-                            stop = true
-                        },
-                        ResponseState::Done        => {
-                            self.is_done = true;
-                            stop = true
-                        },
-                        ResponseState::Aborted     => return Err(io::Error::from(io::ErrorKind::ConnectionAborted)),
-                        ResponseState::TimedOut    => return Err(io::Error::from(io::ErrorKind::TimedOut)),
-                        ResponseState::UnknownHost => return Err(io::Error::new(io::ErrorKind::Other, "unknown host")),
-                        ResponseState::ProtocolError       => return Err(io::Error::new(io::ErrorKind::Other, "http protocol error")),
-                    }
-
-                }
-
-                if stop {
-                    break 'ev
-                }
-
-                self.events.clear();
-
-            }
-
+        if let Some(ref mut waker) = guard.waker {
+            waker.clone_from(ctx.waker()); // this clone from is optimized, see Waker::will_wake
+        } else {
+            unreachable!()
         }
 
-        let bytes_to_return = buff.len().min(self.storage.len());
-        buff[..bytes_to_return].copy_from_slice(&self.storage[..bytes_to_return]);
-        self.storage.drain(..bytes_to_return);
-
-        Ok(bytes_to_return)
-
+        // read some data, only removing the response entry if one chunk of
+        // data was fully read
+        if let Some(resp) = guard.resps.front_mut() {
+            let result = match resp {
+                ResponseState::Head(..) => unreachable!(),
+                ResponseState::Data(data) => {
+                    let to_copy = data.len().min(buff.len());
+                    buff[..to_copy].copy_from_slice(&data[..to_copy]);
+                    data.truncate(data.len() - to_copy);
+                    if data.len() == 0 {
+                        guard.resps.pop_front();
+                    }
+                    Ok(to_copy)
+                },
+                ResponseState::Done => Ok(0),
+                err => Err(err.into_io_error().unwrap())
+            };
+            drop(guard);
+            Poll::Ready(result)
+        } else {
+            drop(guard);
+            Poll::Pending
+        }
+        
     }
 
 }
@@ -281,18 +277,6 @@ pub struct SimpleResponse<B> {
 
 impl SimpleResponse<Vec<u8>> {
 
-    fn empty() -> Self {
-        Self {
-            head: ResponseHead {
-                status: Status { code: 0, reason: String::new() },
-                headers: Vec::new(),
-                content_length: 0,
-                transfer_chunked: false
-            },
-            body: Vec::new(),
-        }
-    }
-
     /// Convert the request body into a `String`.
     /// Note that the data is assumed to be valid utf8. Text encodings
     /// are not handeled by this crate.
@@ -300,16 +284,15 @@ impl SimpleResponse<Vec<u8>> {
         String::from_utf8(self.body)
     }
 
-    /// Access the request body as a `&str`.
-    pub fn to_str<'d>(&'d self) -> Result<&'d str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.body)
-    }
-
 }
 
 impl<B> fmt::Debug for SimpleResponse<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "SimpleResponse {{ status: {}, {} }}", self.head.status.code, self.head.status.reason)
+        if f.alternate() {
+            write!(f, "SimpleResponse {{ head: {:?}, ... }}", self.head)
+        } else {
+            write!(f, "SimpleResponse {{ status: {}, {}, ... }}", self.head.status.code, self.head.status.reason)
+        }
     }
 }
 

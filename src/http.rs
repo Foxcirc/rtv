@@ -5,7 +5,7 @@
 //! as well as the [`Response`] type used to receive responses using a [`Client`](crate::Client).
 //! The [`SimpleClient`](crate::SimpleClient) uses it's own response types.
 
-use std::{fmt, time::Duration};
+use std::{fmt, time::Duration, ops::Range, io};
 
 /// An HTTP method.
 /// The default method is `GET`.
@@ -29,7 +29,7 @@ pub enum Method {
 /// Secure = HTTPS
 /// ```
 ///
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 pub enum Mode {
     #[default]
     Plain,
@@ -174,11 +174,19 @@ impl<'a> RequestBuilder<'a> {
 
 }
 
-/// This just calls [`finish`](RequestBuilder::finish).
-impl<'a> From<RequestBuilder<'a>> for Request<'a> {
+/// This just calls [`finish`](RequestBuilder::finish) and then [`format`](Request::format).
+impl<'a> From<RequestBuilder<'a>> for RawRequest {
     #[inline(always)]
     fn from(builder: RequestBuilder<'a>) -> Self {
-        builder.finish()
+        builder.finish().format()
+    }
+}
+
+/// This just calls [`format`](Request::format).
+impl<'a> From<Request<'a>> for RawRequest {
+    #[inline(always)]
+    fn from(request: Request<'a>) -> Self {
+        request.format()
     }
 }
 
@@ -259,7 +267,10 @@ impl<'a> Request<'a> {
         RequestBuilder::default().method(Method::Post)
     }
 
-    pub(crate) fn format(&self) -> Vec<u8> {
+    /// Formats this request into valid http bytes.
+    ///
+    /// This will copy all referenced data and thus no longer requires any lifetimes.
+    pub fn format(&self) -> RawRequest {
 
         let method = match self.method {
             Method::Get     => "GET",
@@ -310,14 +321,35 @@ impl<'a> Request<'a> {
         }
 
         let head = format!("{} /{} HTTP/1.1\r\nHost: {}\r\n{}\r\n", method, trimmed_path, host, headers);
+        let host_idx = head.find("Host: ").unwrap() + 6;
         let mut bytes = head.into_bytes();
 
         bytes.extend_from_slice(self.body);
 
-        bytes
+        RawRequest {
+            bytes,
+            mode: self.mode,
+            timeout: self.timeout,
+            host: host_idx .. host_idx + self.uri.host.len()
+        }
 
     }
 
+}
+
+pub struct RawRequest {
+    pub bytes: Vec<u8>,
+    pub mode: Mode,
+    pub timeout: Option<Duration>,
+    host: Range<usize>, // where in `bytes` the host is
+}
+
+impl RawRequest {
+    pub fn host(&self) -> &str {
+        std::str::from_utf8(
+            &self.bytes[self.host.clone()]
+        ).unwrap()
+    }
 }
 
 /// An owned HTTP header. This is used in a response.
@@ -469,15 +501,18 @@ impl ResponseState {
 
     /// Returns `true` if this state signals that the request is finished.
     ///
+    /// If true, this request will no longer generate any events.
     /// This is implemented as:
     /// ```
-    /// self.is_completed() || self.is_error()
+    /// self.is_done() || self.is_error()
     /// ```
     pub fn is_finished(&self) -> bool {
         self.is_done() || self.is_error()
     }
 
     /// Returns `true` if this state is `Done`.
+    ///
+    /// If true, this request will no longer generate any events.
     pub fn is_done(&self) -> bool {
         match self {
             Self::Head(..)      => false,
@@ -491,6 +526,8 @@ impl ResponseState {
     }
 
     /// Returns `true` if this state is either `Dead`, `TimedOut`, `UnknownHost` or `Error`.
+    ///
+    /// If true, this request will no longer generate any events.
     pub fn is_error(&self) -> bool {
         match self {
             Self::Head(..)      => false,
@@ -500,6 +537,17 @@ impl ResponseState {
             Self::Aborted       => true, // <-
             Self::UnknownHost   => true, // <-
             Self::ProtocolError => true, // <-
+        }
+    }
+
+    /// Returns an appropriate error if `is_error` is true.
+    pub fn into_io_error(&self) -> Option<io::Error> {
+        match self {
+            ResponseState::Aborted       => Some(io::Error::from(io::ErrorKind::ConnectionAborted)),
+            ResponseState::TimedOut      => Some(io::Error::from(io::ErrorKind::TimedOut)),
+            ResponseState::UnknownHost   => Some(io::Error::new(io::ErrorKind::Other, "unknown host")),
+            ResponseState::ProtocolError => Some(io::Error::new(io::ErrorKind::Other, "http protocol error")),
+            _other => None
         }
     }
 

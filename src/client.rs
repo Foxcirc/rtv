@@ -2,8 +2,9 @@
 //! This module contains an HTTP [`Client`] that runs ontop of `mio`.
 
 use mio::net::TcpStream;
+use chunked_transfer::Decoder as ChunkedDecoder;
 use std::{io::{self, Write, Read}, time::{Duration, Instant}, collections::HashMap, net::{SocketAddr, Ipv4Addr}, mem::replace};
-use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, hash}, ResponseHead, Request, ReqId, Response, ResponseState, Mode, Status, OwnedHeader, decoder};
+use crate::{dns, util::{make_socket_addr, notconnected, register_all, wouldblock, hash}, ResponseHead, ReqId, Response, ResponseState, Mode, Status, OwnedHeader, RawRequest};
 
 #[cfg(feature = "tls")]
 use std::sync::Arc;
@@ -154,18 +155,16 @@ impl Client {
     /// let request = Request::get().host("example.com");
     /// client.send(&io, mio::Token(1), request)?; // io is the mio::Poll
     /// ```
-    pub fn send<'a>(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<Request<'a>>) -> io::Result<ReqId> {
+    pub fn send(&mut self, io: &mio::Poll, token: mio::Token, input: impl Into<RawRequest>) -> io::Result<ReqId> {
 
         let request = input.into();
-
-        let request_bytes = request.format();
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
-        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.uri.host);
+        let mode = InternalMode::from_mode(request.mode, &self.tls_config, request.host());
 
-        let maybe_cached = self.dns_cache.get(&hash(request.uri.host));
+        let maybe_cached = self.dns_cache.get(&hash(request.host()));
         let state = match maybe_cached {
 
             Some(cached_addr) if !cached_addr.is_outdated() => {
@@ -173,7 +172,7 @@ impl Client {
                 let mut connection = Connection::new(cached_addr.ip_addr, mode)?;
                 register_all(io, &mut connection, token)?;
                 InternalReqState::Sending {
-                    body: request_bytes,
+                    body: request.bytes,
                     connection,
                 }
 
@@ -181,11 +180,11 @@ impl Client {
 
             _not_cached_or_old => {
 
-                let dns_id = self.dns.resolve(io, request.uri.host, request.timeout)?;
+                let dns_id = self.dns.resolve(io, request.host(), request.timeout)?;
                 InternalReqState::Resolving {
-                    body: request_bytes,
+                    host: hash(request.host()),
+                    body: request.bytes,
                     dns_id,
-                    host: hash(request.uri.host),
                     mode
                 }
 
@@ -434,7 +433,7 @@ impl Client {
 
                                                 let chain = io::Cursor::new(buffer).chain(connection);
                                                 let recv = if transfer_chunked {
-                                                    RecvBody::Chunked(decoder::Decoder::new(chain))
+                                                    RecvBody::Chunked(ChunkedDecoder::new(chain))
                                                 } else {
                                                     RecvBody::Plain(chain)
                                                 };
@@ -653,7 +652,7 @@ impl InternalReqState {
 
 enum RecvBody {
     Plain(io::Chain<io::Cursor<Vec<u8>>, Connection>),
-    Chunked(decoder::Decoder<io::Chain<io::Cursor<Vec<u8>>, Connection>>)
+    Chunked(ChunkedDecoder<io::Chain<io::Cursor<Vec<u8>>, Connection>>)
 }
 
 impl RecvBody {

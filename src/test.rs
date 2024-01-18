@@ -1,5 +1,5 @@
 
-use std::{time::Duration, io::Read};
+use std::time::Duration;
 use crate::{dns, Client, Request, SimpleClient};
 
 #[test]
@@ -51,7 +51,7 @@ fn request_builder() {
 }
 
 #[test]
-fn http_request() {
+fn mio_http_request() {
 
     let mut io = mio::Poll::new().unwrap();
     let mut events = mio::Events::with_capacity(16);
@@ -94,83 +94,98 @@ fn http_request() {
 #[test]
 fn simple_request() {
 
-    let mut client = SimpleClient::new().unwrap();
+    extreme::run(async {
+        
+        let mut client = SimpleClient::new().unwrap();
 
-    let resp = client.send(Request::get().host("google.com")).unwrap();
+        let resp = client.send(Request::get().host("google.com")).await.unwrap();
 
-    println!("Got a response!");
-    println!("Body length: {}", resp.body.len());
+        println!("Got a response!");
+        println!("Body length: {}", resp.body.len());
+
+    })
 
 }
 
 #[test]
 fn chunked_request() {
 
-    let mut client = SimpleClient::new().unwrap();
+    extreme::run(async {
+        
+        let mut client = SimpleClient::new().unwrap();
 
-    let resp = client.send(Request::get().host("www.google.com")).unwrap();
+        let resp = client.send(Request::get().host("www.google.com")).await.unwrap();
 
-    println!("Got a response!");
+        println!("Got a response!");
 
-    let transfer_encoding = resp.head.get_header("Transfer-Encoding").unwrap();
-    println!("Transfer-Encoding: {}", transfer_encoding);
-    assert!(transfer_encoding == "chunked");
+        let transfer_encoding = resp.head.get_header("Transfer-Encoding").unwrap();
+        println!("Transfer-Encoding: {}", transfer_encoding);
+        assert!(transfer_encoding == "chunked");
 
-    println!("Head:");
-    println!("{:?}", resp.head);
+        println!("Head:");
+        println!("{:?}", resp.head);
 
-    // println!("{}", String::from_utf8_lossy(&resp.body));
+        // println!("{}", String::from_utf8_lossy(&resp.body));
 
-}
+    })
 
-#[test]
-fn many_request() {
-
-    const NUM_REQUESTS: usize = 16;
-
-    let mut client = SimpleClient::new().unwrap();
-
-    let req = Request::get().host("google.com");
-    let other_req = Request::get().host("example.com");
-    let mut reqs = vec![req; NUM_REQUESTS];
-    reqs.push(other_req);
-
-    let resps = client.many(reqs).unwrap();
-
-    println!("Total requests: {}", NUM_REQUESTS + 1);
-    println!("Total responses: {}", resps.len());
-
-    for (idx, result) in resps.into_iter().enumerate() {
-        let resp = result.unwrap();
-        println!("Got a response {:?}", resp);
-        if idx == NUM_REQUESTS + 1 - 1 {
-            assert!(resp.body.len() == 1256, "Last resp must be the example.com one!");
-            assert!(resp.head.status.code == 200, "Last resp must be the example.com one!");
-        }
-    }
 
 }
+
+// #[test]
+// fn many_request() {
+
+//     const NUM_REQUESTS: usize = 16;
+
+//     let mut client = SimpleClient::new().unwrap();
+
+//     let req = Request::get().host("google.com");
+//     let other_req = Request::get().host("example.com");
+//     let mut reqs = vec![req; NUM_REQUESTS];
+//     reqs.push(other_req);
+
+//     let resps = client.many(reqs).unwrap();
+
+//     println!("Total requests: {}", NUM_REQUESTS + 1);
+//     println!("Total responses: {}", resps.len());
+
+//     for (idx, result) in resps.into_iter().enumerate() {
+//         let resp = result.unwrap();
+//         println!("Got a response {:?}", resp);
+//         if idx == NUM_REQUESTS + 1 - 1 {
+//             assert!(resp.body.len() == 1256, "Last resp must be the example.com one!");
+//             assert!(resp.head.status.code == 200, "Last resp must be the example.com one!");
+//         }
+//     }
+
+// }
 
 
 #[test]
 #[cfg(feature = "tls")]
 fn streaming_request() {
+    use futures_lite::AsyncReadExt;
 
-    let mut client = SimpleClient::new().unwrap();
 
-    let mut resp = client.stream(Request::get().secure().host("crates.io").user_agent("foxcirc's rtv")).unwrap();
-    // println!("{:?}", resp.head);
+    extreme::run(async {
 
-    let mut buff = Vec::new();
-    resp.body.read_to_end(&mut buff).unwrap();
+        let mut client = SimpleClient::new().unwrap();
 
-    // println!("{}", buff);
+        let mut resp = client.stream(Request::get().secure().host("crates.io").user_agent("foxcirc's rtv")).await.unwrap();
+        // println!("{:?}", resp.head);
 
-    println!("Expected length: {}", resp.head.content_length);
-    println!("Actual length: {}", buff.len());
-    println!("Status: {:?}", resp.head.status);
+        let mut buff = Vec::new();
+        resp.body.read_to_end(&mut buff).await.unwrap();
 
-    // assert!(resp.head.content_length == buff.len());
+        // println!("{}", buff);
+
+        println!("Expected length: {}", resp.head.content_length);
+        println!("Actual length: {}", buff.len());
+        println!("Status: {:?}", resp.head.status);
+
+        // assert!(resp.head.content_length == buff.len());
+        
+    })
 
 }
 
@@ -178,11 +193,15 @@ fn streaming_request() {
 #[cfg(feature = "tls")]
 fn secure_request() {
 
-    let mut client = SimpleClient::new().unwrap();
+    extreme::run(async {
 
-    let _resp = client.send(Request::get().secure().host("www.wikipedia.org")).unwrap();
+        let mut client = SimpleClient::new().unwrap();
 
-    // println!("resp: {}", resp.into_string_lossy());
+        let _resp = client.send(Request::get().secure().host("www.wikipedia.org")).await.unwrap();
+
+        // println!("resp: {}", resp.into_string_lossy());
+        
+    })
 
 }
 

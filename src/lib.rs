@@ -34,14 +34,12 @@
 //! The `tls` default-feature enables the use of HTTPS using rustls.
 //!
 
-// see comment inside the module
-mod decoder;
-
 mod util;
 mod dns;
 pub mod http;
 pub mod client;
 pub mod simple;
+pub mod simple_async;
 
 #[cfg(test)]
 mod test;
