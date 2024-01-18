@@ -1,11 +1,11 @@
 [package]
 name = "rtv"
-version = "3.0.0"
+version = "4.0.0"
 edition = "2021"
 authors = ["foxcirc"]
 description = "Minimal HTTP/S client that supports nonblocking and streaming requests using mio."
-keywords = ["http", "client", "simple", "nonblocking", "mio"]
-categories = ["web-programming", "web-programming::http-client"]
+keywords = ["http", "client", "simple", "nonblocking", "mio", "async"]
+categories = ["web-programming", "web-programming::http-client", "asynchronous"]
 repository = "https://github.com/Foxcirc/rtv"
 readme = "readme.md"
 license = "MIT"
