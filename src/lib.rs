@@ -35,15 +35,13 @@
 //! # Features
 //!
 //! The `tls` default-feature enables the use of HTTPS using rustls.
+//! The `async` default-feature enables the `SimpleClient` functionality.
 //!
 
 mod util;
 mod dns;
 pub mod http;
 pub mod client;
-#[cfg(unix)]
-pub mod simple;
-
 #[cfg(test)]
 mod test;
 
@@ -52,5 +50,8 @@ pub use {
     client::*
 };
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "async"))]
+pub mod simple;
+
+#[cfg(all(unix, feature = "async"))]
 pub use simple::*;
