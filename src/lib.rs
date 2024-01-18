@@ -3,14 +3,16 @@
 //!
 //! Rtv is a simple, minimal dependency HTTP client that runs ontop of [`mio`](https://docs.rs/mio/0.8.8/mio).
 //!
-//! This library **doesn't use rust async**, however it still allows you to asyncronously
-//! send requests using [`mio`](https://docs.rs/mio/0.8.8/mio). This approach a bit more verbose but allows for a simpler
-//! architecture, not requiring 50+ dependencies.
-//! 
-//! Depending on how much flexibility you need you can choose between:
+//! This library allows you to `asyncronously` send requests using `async` or [`mio`](https://docs.rs/mio/0.8.8/mio) directly.
+//! Using `mio` is verbose but allows for a much more light weight architecture and fine grained control because *you* do the event
+//! handling.
+//!
+//! I think that using tokio is overkill for most applications. It takes ages to build and requires 100+ dependencies
+//! just to get a simple http client up and running.
+//!
+//! Depending on how what you need you can choose between:
 //! - A [`Client`], which gives you full controll and is used with a [`mio::Poll`](https://docs.rs/mio/latest/mio/struct.Poll.html).
-//! - A [`SimpleClient`], which makes it simple to send one request, send many requests at the same time
-//!   or stream a request.
+//! - A [`SimpleClient`], which enables you to use the `async` ecosystem, still in a lightweight way.
 //!
 //! ### Supported features:
 //! - Plain HTTP requests
@@ -18,6 +20,7 @@
 //! - Chunked transfer encoding
 //! - Nonblocking DNS lookup & HTTP requests
 //! - Timeouts
+//! - Lightweight, runtime independent `async` reqests
 //! 
 //! ### Currently **not** implemented:
 //! - Connection keep alive
@@ -38,6 +41,7 @@ mod util;
 mod dns;
 pub mod http;
 pub mod client;
+#[cfg(unix)]
 pub mod simple;
 
 #[cfg(test)]
@@ -45,7 +49,8 @@ mod test;
 
 pub use {
     http::*,
-    client::*,
-    simple::*,
+    client::*
 };
 
+#[cfg(unix)]
+pub use simple::*;

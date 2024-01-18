@@ -17,19 +17,19 @@ all-features = true
 doctest = false
 
 [features]
-default = ["tls"]
+default = ["tls", "async"]
 tls = ["rustls", "webpki-roots"]
+async = ["futures-lite", "futures-io"]
 
 [dependencies]
-mio          = { version = "0.8.*", features = ["net", "os-poll", "os-ext"] }
-dns-parser   = { version = "0.8.0" }
-chunked_transfer = "1.5.0" # this dependecy is included as a module since some changes were made
-httparse = "1.8.0"
+mio = { version = "0.8.*", features = ["net", "os-poll", "os-ext"] }
+dns-parser = { version = "0.8.*" }
+chunked_transfer = "1.5.*"
+httparse = "1.8.*"
 rustls       = { version = "0.21.*", optional = true }
 webpki-roots = { version = "0.23.*", optional = true }
-futures-lite = "2.2.0" # todo: make optional (simleClient feature)
-futures-core = "0.3.30" # todo ^^^
-futures-io = "0.3.30"
+futures-lite = { version = "2.2.*",  optional = true }
+futures-io   = { version = "0.3.*", optional = true }
 
 [dev-dependencies]
 extreme = "6.*"

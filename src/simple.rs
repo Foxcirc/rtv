@@ -1,5 +1,5 @@
 
-//! This module contains a [`SimpleClient`] that allows sending simple requests.
+//! Sending requests using `async`.
 
 use std::{fmt, io::{self, Read, Write}, string, thread, sync::{Arc, Mutex}, collections::{HashMap, VecDeque}, task::{self, Waker, Poll}, future::{self, Future}, pin::Pin};
 use futures_lite::AsyncReadExt;
@@ -8,10 +8,11 @@ use crate::{Client, ResponseHead, ResponseState, RawRequest, util::wouldblock};
 
 /// A simpler HTTP client that handles I/O events for you.
 ///
-/// The `SimpleClient` allows you to:
-///     1. Send a [`single`](SimpleClient::send) request and block until the response has arrived.
-///     2. Send [`many`](SimpleClient::many) requests at the same time and block until all responses have arrived.
-///     3. Send a single request and [`stream`](SimpleClient::stream) the request body.
+/// The `SimpleClient` allows you to send requests and read the response using a future.
+/// The client is backed by a single reaper thread, that egerly polls `mio` for new event and processes them.
+/// Because of this design the client is fully runtime independent. It even works without any runtime. You could just `block_on` the future.
+///
+/// Sadly, because the `mio::unix::pipe` module is used here, the client currently only runs on 64 bit unix systems.
 ///
 /// # Example
 ///
@@ -19,12 +20,15 @@ use crate::{Client, ResponseHead, ResponseState, RawRequest, util::wouldblock};
 ///
 /// ```rust
 /// let mut client = SimpleClient::new()?;
-/// let resp = client.send(Request::get("example.com"))?;
+/// let resp = client.send(Request::get("example.com")).await?;
 /// let body_str = String::from_utf8(resp.body); // note: not all websites use UTF-8!
 /// println!("{}", body_str);
 /// ```
-
-// todo: the whole simple.rs is available on 64bit unix only due to mio::unix::Pipe being used
+///
+/// # Note
+/// Please note that the client currently just panics in a lot of fatal error cases.
+/// Most errors should be caught when calling `SimpleClient::new` though!
+/// I plan on adressing this issue soon, so TODO: Fix hard panics on mio/pipe error and error on next stream/send instead
 pub struct SimpleClient {
     reaper: Option<thread::JoinHandle<()>>,
     sender: mio::unix::pipe::Sender,
@@ -145,8 +149,8 @@ impl SimpleClient {
 
     /// Send a single request.
     ///
-    /// This method will send a single request and block until the
-    /// response arrives.
+    /// This method will send a single request.
+    /// The returned future does not borrow `self`.
     pub fn send(&mut self, input: impl Into<RawRequest>) -> impl Future<Output = io::Result<SimpleResponse<Vec<u8>>>> {
 
         let future = self.stream(input);
@@ -163,14 +167,12 @@ impl SimpleClient {
 
     }
 
-    // todo: make a function that returns a Future
-
     /// Stream a single request.
     ///
     /// This method will send a single request and return a response once the
     /// [`ResponseHead`] has been transmitted.
     /// The response will contain a [`BodyReader`] as the `body` which implements
-    /// the [`AsyncRead`] trait.
+    /// the [`AsyncRead`](futures_io::AsyncRead) trait.
     ///
     /// You can receive large responses packet-by-packet using this method.
     pub fn stream<'d>(&'d mut self, input: impl Into<RawRequest>) -> impl Future<Output = io::Result<SimpleResponse<BodyReader>>> {
