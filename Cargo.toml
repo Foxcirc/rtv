@@ -27,7 +27,7 @@ dns-parser = { version = "0.8.*" }
 chunked_transfer = "1.5.*"
 httparse = "1.8.*"
 rustls       = { version = "0.21.*", optional = true }
-webpki-roots = { version = "0.23.*", optional = true }
+webpki-roots = { version = "1.0.10", optional = true }
 futures-lite = { version = "2.2.*",  optional = true }
 futures-io   = { version = "0.3.*", optional = true }
 
